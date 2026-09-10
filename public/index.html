@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>دفتر الشركاء</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1c1a15; --ink-soft:#5c5747; --paper:#f5f1e6; --paper-raised:#fffdf7;
+    --line:#d8d0ba; --teal:#0e3b36; --teal-deep:#082622; --brass:#b3812f; --brass-soft:#e8d9b5;
+    --credit:#356b4e; --debit:#a13c33; --radius:3px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:'Tajawal',sans-serif;min-height:100vh;}
+  #app{min-height:100vh;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .ledger-card{width:100%;max-width:380px;background:var(--paper-raised);border:1px solid var(--line);border-top:6px solid var(--teal);border-radius:var(--radius);padding:36px 30px 30px;}
+  .brand{display:flex;align-items:baseline;gap:10px;margin-bottom:6px;}
+  .brand .mark{width:34px;height:34px;border:2px solid var(--teal);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--teal);font-weight:900;font-size:16px;flex:none;}
+  .brand h1{font-size:21px;margin:0;font-weight:900;color:var(--teal-deep);}
+  .sub{color:var(--ink-soft);font-size:13.5px;margin:0 0 26px;line-height:1.7;}
+  label{display:block;font-size:12.5px;color:var(--ink-soft);margin-bottom:6px;font-weight:500;}
+  .field{margin-bottom:16px;}
+  input[type=text],input[type=password],input[type=number],input[type=date],select,textarea{
+    width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;font-family:inherit;font-size:14.5px;color:var(--ink);
+  }
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(14,59,54,.12);}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--teal);color:#fff;border:none;padding:11px 18px;border-radius:var(--radius);font-family:inherit;font-size:14.5px;font-weight:700;cursor:pointer;transition:background .15s;}
+  .btn:hover{background:var(--teal-deep);}
+  .btn.block{width:100%;}
+  .btn.ghost{background:transparent;color:var(--teal);border:1px solid var(--teal);}
+  .btn.ghost:hover{background:rgba(14,59,54,.06);}
+  .btn.sm{padding:7px 12px;font-size:13px;}
+  .btn.danger{background:transparent;color:var(--debit);border:1px solid var(--debit);padding:7px 12px;font-size:13px;}
+  .btn.danger:hover{background:rgba(161,60,51,.08);}
+  .error-box{background:#fbeceb;border:1px solid #e6b6b0;color:var(--debit);padding:10px 12px;border-radius:var(--radius);font-size:13px;margin-bottom:16px;}
+  .ok-box{background:#e3efe6;border:1px solid #b9d7c3;color:var(--credit);padding:10px 12px;border-radius:var(--radius);font-size:13px;margin-bottom:16px;}
+  .hint-creds{margin-top:20px;padding-top:16px;border-top:1px dashed var(--line);font-size:12px;color:var(--ink-soft);line-height:1.8;}
+  .shell{display:flex;min-height:100vh;}
+  .sidebar{width:230px;flex:none;background:var(--teal-deep);color:#e9e4d4;padding:24px 18px;display:flex;flex-direction:column;}
+  .sidebar .brand{color:#fff;margin-bottom:2px;}
+  .sidebar .brand .mark{border-color:var(--brass-soft);color:var(--brass-soft);}
+  .sidebar .brand h1{color:#fff;font-size:18px;}
+  .who{font-size:12.5px;color:#b9c9c2;margin:4px 0 26px;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.12);}
+  .who b{color:#fff;display:block;font-size:14px;margin-top:2px;}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);color:#cdd6cd;font-size:14px;cursor:pointer;margin-bottom:2px;}
+  .nav-item:hover{background:rgba(255,255,255,.06);}
+  .nav-item.active{background:rgba(179,129,47,.85);color:#fff;font-weight:700;}
+  .sidebar-foot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px;}
+  .logout-link{color:#e2bdb8;font-size:13px;cursor:pointer;background:none;border:none;font-family:inherit;padding:0;text-align:right;}
+  .logout-link:hover{text-decoration:underline;}
+  .main{flex:1;padding:30px 34px;max-width:1180px;}
+  .page-head{margin-bottom:26px;}
+  .page-head h2{margin:0 0 4px;font-size:22px;color:var(--teal-deep);font-weight:900;}
+  .page-head p{margin:0;color:var(--ink-soft);font-size:13.5px;}
+  .grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:26px;}
+  .stat{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;}
+  .stat .label{font-size:12px;color:var(--ink-soft);margin-bottom:8px;}
+  .stat .val{font-size:22px;font-weight:900;font-family:'IBM Plex Mono',monospace;}
+  .stat .val.credit{color:var(--credit);} .stat .val.debit{color:var(--debit);} .stat .val.teal{color:var(--teal);}
+  .panel{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:22px;overflow:hidden;}
+  .panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);background:#fbf8f0;}
+  .panel-head h3{margin:0;font-size:15px;font-weight:700;color:var(--teal-deep);}
+  .panel-body{padding:18px;}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  th{text-align:right;font-size:11.5px;color:var(--ink-soft);font-weight:700;padding:8px 10px;border-bottom:1px solid var(--line);}
+  td{padding:10px 10px;border-bottom:1px solid #ece6d4;vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  .amt{font-family:'IBM Plex Mono',monospace;font-weight:700;}
+  .amt.credit{color:var(--credit);} .amt.debit{color:var(--debit);}
+  .tag{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;font-weight:700;}
+  .tag.rev{background:#e3efe6;color:var(--credit);} .tag.exp{background:#f6e4e2;color:var(--debit);}
+  .tag.dep{background:#e3efe6;color:var(--credit);} .tag.wd{background:#f6e4e2;color:var(--debit);}
+  .tag.dist{background:var(--brass-soft);color:#7a5518;}
+  .empty{padding:30px 10px;text-align:center;color:var(--ink-soft);font-size:13.5px;}
+  .form-row{display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-bottom:2px;}
+  .form-row.three{grid-template-columns:1fr 1fr 1fr;}
+  @media (max-width:720px){.form-row,.form-row.three{grid-template-columns:1fr;}}
+  .partner-pct-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #ece6d4;}
+  .partner-pct-row:last-child{border-bottom:none;}
+  .partner-pct-row .pname{flex:1;font-size:14px;}
+  .partner-pct-row input{width:90px;}
+  .pct-total{margin-top:10px;font-size:13px;padding:8px 10px;border-radius:var(--radius);}
+  .pct-total.ok{background:#e3efe6;color:var(--credit);} .pct-total.bad{background:#f6e4e2;color:var(--debit);}
+  .select-projects{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;}
+  .chip{padding:8px 16px;border:1px solid var(--line);border-radius:20px;font-size:13.5px;cursor:pointer;background:#fff;color:var(--ink-soft);font-weight:500;}
+  .chip.active{background:var(--teal);color:#fff;border-color:var(--teal);font-weight:700;}
+  .balance-banner{display:flex;align-items:center;justify-content:space-between;background:var(--teal-deep);color:#fff;padding:22px 24px;border-radius:var(--radius);margin-bottom:22px;flex-wrap:wrap;gap:10px;}
+  .balance-banner .l{font-size:13px;color:#bcd0c8;margin-bottom:6px;}
+  .balance-banner .v{font-size:30px;font-weight:900;font-family:'IBM Plex Mono',monospace;}
+  .balance-banner .pct{font-size:13px;color:#d7e4dc;}
+  .del-x{background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;}
+  .del-x:hover{color:var(--debit);}
+  .inline-pw{display:flex;gap:6px;align-items:center;}
+  .inline-pw input{width:130px;padding:6px 8px;font-size:12.5px;}
+  @media (max-width:860px){
+    .shell{flex-direction:column;}
+    .sidebar{width:100%;flex-direction:row;align-items:center;padding:14px 18px;flex-wrap:wrap;}
+    .sidebar .brand{margin-bottom:0;margin-left:auto;order:1;}
+    .who{display:none;}
+    .sidebar-foot{margin-top:0;order:2;flex-direction:row;}
+    .nav-row{display:flex;gap:6px;flex-wrap:wrap;order:3;width:100%;margin-top:10px;}
+    .main{padding:20px 16px;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+  "use strict";
+  var API = "/api";
+  var token = localStorage.getItem('pl_token') || null;
+  var currentUser = JSON.parse(localStorage.getItem('pl_user') || 'null');
+  var loginError = "";
+  var adminTab = 'partners';
+  var partnerActiveProject = null;
+  var cache = { partners:[], projects:[], entries:{}, currentAccount:{}, meProjects:[], report:{} };
+  var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null };
+
+  function money(n){ n=Number(n)||0; return n.toLocaleString('ar-EG',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function fmtDate(s){ if(!s) return ""; var d = new Date(s); if(isNaN(d)) return s; return d.toLocaleDateString('ar-EG',{day:'2-digit',month:'2-digit',year:'numeric'}); }
+  function todayStr(){ return new Date().toISOString().slice(0,10); }
+  function escapeHtml(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+
+  async function api(method, path, body){
+    var opts = { method:method, headers:{'Content-Type':'application/json'} };
+    if(token) opts.headers['Authorization'] = 'Bearer '+token;
+    if(body!==undefined) opts.body = JSON.stringify(body);
+    var res;
+    try{
+      res = await fetch(API+path, opts);
+    }catch(e){
+      throw new Error('تعذر الاتصال بالسيرفر. تأكد من اتصالك بالإنترنت.');
+    }
+    var data = null;
+    try{ data = await res.json(); }catch(e){ /* no body */ }
+    if(!res.ok){
+      if(res.status===401){ logout(); }
+      throw new Error((data && data.error) || 'حدث خطأ غير متوقع');
+    }
+    return data;
+  }
+
+  function saveSession(){
+    if(token) localStorage.setItem('pl_token', token); else localStorage.removeItem('pl_token');
+    if(currentUser) localStorage.setItem('pl_user', JSON.stringify(currentUser)); else localStorage.removeItem('pl_user');
+  }
+  function logout(){ token=null; currentUser=null; saveSession(); loginError=""; render(); }
+
+  function render(){
+    var app = document.getElementById('app');
+    if(!currentUser){ app.innerHTML = renderLogin(); bindLogin(); return; }
+    if(currentUser.role==='admin'){ app.innerHTML = renderAdminShell(); bindAdminShell(); }
+    else { app.innerHTML = renderPartnerShell(); bindPartnerShell(); }
+  }
+
+  // ================= LOGIN =================
+  function renderLogin(){
+    return '<div class="login-wrap"><div class="ledger-card">'+
+      '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
+      '<p class="sub">سجّل الدخول لعرض حسابك الجاري وحساب المشروع الخاص بك.</p>'+
+      (loginError ? '<div class="error-box">'+escapeHtml(loginError)+'</div>' : '')+
+      '<form id="login-form">'+
+        '<div class="field"><label>اسم المستخدم</label><input type="text" id="li-user" autocomplete="username" required></div>'+
+        '<div class="field"><label>كلمة المرور</label><input type="password" id="li-pass" autocomplete="current-password" required></div>'+
+        '<button class="btn block" type="submit" id="li-submit">دخول</button>'+
+      '</form>'+
+      '<div class="hint-creds">افتح هذا الرابط من أي جهاز (موبايل أو لابتوب) وسجّل دخولك بنفس بيانات حسابك، والبيانات محفوظة في قاعدة بيانات مركزية واحدة.</div>'+
+    '</div></div>';
+  }
+  function bindLogin(){
+    document.getElementById('login-form').addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var u = document.getElementById('li-user').value.trim();
+      var p = document.getElementById('li-pass').value;
+      var btn = document.getElementById('li-submit');
+      btn.disabled = true; btn.textContent = 'جارِ الدخول…';
+      try{
+        var data = await api('POST','/login',{username:u,password:p});
+        token = data.token; currentUser = data.user; saveSession();
+        loginError = ""; adminTab='partners'; partnerActiveProject=null;
+        render();
+      }catch(e){
+        loginError = e.message; render();
+      }
+    });
+  }
+
+  // ================= ADMIN =================
+  var adminNav = [
+    {key:'partners', label:'الشركاء', icon:'👥'},
+    {key:'projects', label:'المشاريع', icon:'📁'},
+    {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
+    {key:'current', label:'الحساب الجاري', icon:'💳'},
+    {key:'report', label:'تقرير مشروع', icon:'📊'},
+    {key:'settings', label:'إعدادات حسابي', icon:'⚙️'}
+  ];
+
+  function renderAdminShell(){
+    var nav = adminNav.map(function(n){
+      return '<div class="nav-item'+(adminTab===n.key?' active':'')+'" data-nav="'+n.key+'"><span>'+n.icon+'</span><span>'+n.label+'</span></div>';
+    }).join('');
+    return '<div class="shell"><div class="sidebar">'+
+      '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
+      '<div class="who">مسجل الدخول باسم<b>'+escapeHtml(currentUser.name)+'</b></div>'+
+      '<div class="nav-row">'+nav+'</div>'+
+      '<div class="sidebar-foot"><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
+    '</div><div class="main" id="main-area"><div class="empty">جارِ التحميل…</div></div></div>';
+  }
+  function bindAdminShell(){
+    document.getElementById('logout-btn').addEventListener('click', logout);
+    document.querySelectorAll('[data-nav]').forEach(function(el){
+      el.addEventListener('click', function(){ adminTab = el.getAttribute('data-nav'); loadAdminPage(); });
+    });
+    loadAdminPage();
+  }
+  async function loadAdminPage(){
+    render(); // repaint shell to reflect active tab, shows loading
+    var main = document.getElementById('main-area');
+    try{
+      if(adminTab==='partners'){ cache.partners = await api('GET','/partners'); main.innerHTML = pagePartners(); }
+      else if(adminTab==='projects'){
+        cache.partners = await api('GET','/partners');
+        cache.projects = await api('GET','/projects');
+        main.innerHTML = pageProjects();
+      }
+      else if(adminTab==='entries'){
+        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
+        if(cache.projects.length){
+          if(!uiState.entriesProjectId) uiState.entriesProjectId = cache.projects[0].id;
+          cache.entries[uiState.entriesProjectId] = await api('GET','/entries?projectId='+uiState.entriesProjectId);
+        }
+        main.innerHTML = pageEntries();
+      }
+      else if(adminTab==='current'){
+        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
+        if(cache.projects.length){
+          if(!uiState.caProjectId) uiState.caProjectId = cache.projects[0].id;
+          cache.currentAccount[uiState.caProjectId] = await api('GET','/current-account?projectId='+uiState.caProjectId);
+        }
+        main.innerHTML = pageCurrentAccount();
+      }
+      else if(adminTab==='report'){
+        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
+        if(cache.projects.length){
+          if(!uiState.reportProjectId) uiState.reportProjectId = cache.projects[0].id;
+          cache.report[uiState.reportProjectId] = await api('GET','/report/'+uiState.reportProjectId);
+        }
+        main.innerHTML = pageReport();
+      }
+      else if(adminTab==='settings'){ main.innerHTML = pageSettings(); }
+      bindAdminPageEvents();
+    }catch(e){
+      main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
+    }
+  }
+
+  function pagePartners(){
+    var rows = cache.partners.map(function(p){
+      return '<tr><td>'+escapeHtml(p.name)+'</td>'+
+        '<td>'+(p.username ? '<span class="mono">'+escapeHtml(p.username)+'</span>' : '<span style="color:var(--debit)">لا يوجد حساب دخول</span>')+'</td>'+
+        '<td><div class="inline-pw"><input type="text" placeholder="كلمة مرور جديدة" id="pw-'+p.id+'"><button class="btn sm ghost" data-reset-pw="'+p.id+'">تغيير</button></div></td>'+
+        '<td><button class="btn danger" data-del-partner="'+p.id+'">حذف</button></td>'+
+      '</tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">لا يوجد شركاء بعد.</td></tr>';
+
+    return '<div class="page-head"><h2>الشركاء</h2><p>أضف الشركاء، وغيّر كلمة مرور أي شريك في أي وقت.</p></div>'+
+    '<div class="panel"><div class="panel-head"><h3>قائمة الشركاء</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>كلمة المرور</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة شريك جديد</h3></div><div class="panel-body">'+
+      '<form id="add-partner-form"><div class="form-row three">'+
+        '<div class="field"><label>اسم الشريك</label><input type="text" id="np-name" required></div>'+
+        '<div class="field"><label>اسم المستخدم</label><input type="text" id="np-user" required></div>'+
+        '<div class="field"><label>كلمة المرور</label><input type="text" id="np-pass" required></div>'+
+      '</div><button class="btn" type="submit">إضافة الشريك</button></form>'+
+    '</div></div>';
+  }
+
+  function pageProjects(){
+    var cards = cache.projects.map(function(pr){
+      var shareRows = pr.partners.map(function(sh){
+        return '<tr><td>'+escapeHtml(sh.name)+'</td><td class="mono">'+sh.percentage+'%</td></tr>';
+      }).join('') || '<tr><td colspan="2" class="empty">لا يوجد شركاء</td></tr>';
+      return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(pr.name)+'</h3>'+
+        '<button class="btn danger sm" data-del-project="'+pr.id+'">حذف المشروع</button></div>'+
+        '<div class="panel-body"><table><thead><tr><th>الشريك</th><th>النسبة</th></tr></thead><tbody>'+shareRows+'</tbody></table></div></div>';
+    }).join('');
+
+    var partnerRows = cache.partners.map(function(p){
+      return '<div class="partner-pct-row">'+
+        '<label style="display:flex;align-items:center;gap:8px;flex:1;margin:0;font-weight:400;">'+
+          '<input type="checkbox" class="np-partner-check" value="'+p.id+'"> <span class="pname">'+escapeHtml(p.name)+'</span>'+
+        '</label>'+
+        '<input type="number" class="np-partner-pct" data-partner="'+p.id+'" placeholder="النسبة %" min="0" max="100" step="0.01" style="display:none;">'+
+      '</div>';
+    }).join('') || '<div class="empty">أضف شركاء أولاً من صفحة "الشركاء"</div>';
+
+    return '<div class="page-head"><h2>المشاريع</h2><p>كل مشروع ونسبة كل شريك فيه.</p></div>'+
+    (cards || '<div class="panel"><div class="empty">لا توجد مشاريع بعد</div></div>')+
+    '<div class="panel"><div class="panel-head"><h3>إنشاء مشروع جديد</h3></div><div class="panel-body">'+
+      '<form id="add-project-form">'+
+        '<div class="field"><label>اسم المشروع</label><input type="text" id="npj-name" required></div>'+
+        '<label style="margin-top:6px;">الشركاء ونسبة كل منهم</label>'+
+        '<div id="np-partner-list">'+partnerRows+'</div>'+
+        '<div id="pct-total-box" class="pct-total ok">إجمالي النسب: 0%</div>'+
+        '<button class="btn" type="submit" style="margin-top:14px;">إنشاء المشروع</button>'+
+      '</form>'+
+    '</div></div>';
+  }
+
+  function pageEntries(){
+    if(cache.projects.length===0) return '<div class="page-head"><h2>الإيرادات والمصروفات</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
+    var options = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.entriesProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
+    var list = (cache.entries[uiState.entriesProjectId]||[]);
+    var rows = list.map(function(e){
+      return '<tr><td>'+fmtDate(e.entry_date)+'</td>'+
+        '<td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
+        '<td>'+escapeHtml(e.description||'—')+'</td>'+
+        '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td>'+
+        '<td><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">لا توجد حركات بعد لهذا المشروع</td></tr>';
+
+    return '<div class="page-head"><h2>الإيرادات والمصروفات</h2><p>سجّل كل إيراد أو مصروف على المشروع.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="entries-project-select">'+options+'</select></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة حركة</h3></div><div class="panel-body">'+
+      '<form id="add-entry-form"><div class="form-row three">'+
+        '<div class="field"><label>النوع</label><select id="ne-kind"><option value="revenue">إيراد</option><option value="expense">مصروف</option></select></div>'+
+        '<div class="field"><label>المبلغ</label><input type="number" id="ne-amount" min="0" step="0.01" required></div>'+
+        '<div class="field"><label>التاريخ</label><input type="date" id="ne-date" value="'+todayStr()+'" required></div>'+
+      '</div><div class="field"><label>الوصف / البيان</label><input type="text" id="ne-desc"></div>'+
+      '<button class="btn" type="submit">إضافة</button></form>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>سجل الحركات</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div></div>';
+  }
+
+  function pageCurrentAccount(){
+    if(cache.projects.length===0) return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
+    var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.caProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
+    var proj = cache.projects.find(function(p){return p.id==uiState.caProjectId;});
+    var partnersInProject = proj ? proj.partners : [];
+    var partnerOptions = partnersInProject.map(function(p){return '<option value="'+p.partnerId+'">'+escapeHtml(p.name)+'</option>';}).join('');
+
+    var list = (cache.currentAccount[uiState.caProjectId]||[]);
+    var balances = {};
+    partnersInProject.forEach(function(p){ balances[p.partnerId]=0; });
+    list.forEach(function(c){
+      var d = (c.kind==='withdrawal') ? -Number(c.amount) : Number(c.amount);
+      balances[c.partner_id] = (balances[c.partner_id]||0) + d;
+    });
+    var balanceCards = partnersInProject.map(function(p){
+      var bal = balances[p.partnerId]||0;
+      return '<div class="stat"><div class="label">'+escapeHtml(p.name)+'</div><div class="val '+(bal>=0?'credit':'debit')+'">'+money(bal)+'</div></div>';
+    }).join('') || '<div class="empty">لا يوجد شركاء في هذا المشروع</div>';
+
+    var kindLabel = {deposit:'إيداع', withdrawal:'سحب', distribution:'توزيع أرباح'};
+    var kindTag = {deposit:'dep', withdrawal:'wd', distribution:'dist'};
+    var rows = list.map(function(c){
+      var p = partnersInProject.find(function(pp){return pp.partnerId==c.partner_id;});
+      var isCredit = c.kind!=='withdrawal';
+      return '<tr><td>'+fmtDate(c.entry_date)+'</td><td>'+escapeHtml(p?p.name:'—')+'</td>'+
+        '<td><span class="tag '+kindTag[c.kind]+'">'+kindLabel[c.kind]+'</span></td>'+
+        '<td>'+escapeHtml(c.description||'—')+'</td>'+
+        '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td>'+
+        '<td><button class="del-x" data-del-ca="'+c.id+'">✕</button></td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">لا توجد حركات على الحساب الجاري لهذا المشروع</td></tr>';
+
+    return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2><p>سجّل الإيداعات والسحوبات وتوزيعات الأرباح لكل شريك.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="ca-project-select">'+pOptions+'</select></div>'+
+    '<div class="grid-stats">'+balanceCards+'</div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة حركة على الحساب الجاري</h3></div><div class="panel-body">'+
+      (partnersInProject.length===0 ? '<div class="empty">أضف شركاء لهذا المشروع أولاً.</div>' :
+      '<form id="add-ca-form"><div class="form-row three">'+
+        '<div class="field"><label>الشريك</label><select id="nca-partner">'+partnerOptions+'</select></div>'+
+        '<div class="field"><label>نوع الحركة</label><select id="nca-kind"><option value="deposit">إيداع (له)</option><option value="withdrawal">سحب (عليه)</option><option value="distribution">توزيع أرباح (له)</option></select></div>'+
+        '<div class="field"><label>المبلغ</label><input type="number" id="nca-amount" min="0" step="0.01" required></div>'+
+      '</div><div class="form-row">'+
+        '<div class="field"><label>التاريخ</label><input type="date" id="nca-date" value="'+todayStr()+'" required></div>'+
+        '<div class="field"><label>الوصف / البيان</label><input type="text" id="nca-desc"></div>'+
+      '</div><button class="btn" type="submit">إضافة الحركة</button></form>')+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>سجل حركات الحساب الجاري</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div></div>';
+  }
+
+  function pageReport(){
+    if(cache.projects.length===0) return '<div class="page-head"><h2>تقرير مشروع</h2></div><div class="panel"><div class="empty">لا توجد مشاريع بعد.</div></div>';
+    var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.reportProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
+    var rep = cache.report[uiState.reportProjectId];
+    if(!rep) return '<div class="page-head"><h2>تقرير مشروع</h2></div><div class="panel"><div class="empty">جارِ التحميل…</div></div>';
+
+    var shareRows = rep.partners.map(function(p){
+      return '<tr><td>'+escapeHtml(p.name)+'</td><td class="mono">'+p.percentage+'%</td>'+
+        '<td class="amt '+(p.shareOfNet>=0?'credit':'debit')+'">'+money(p.shareOfNet)+'</td>'+
+        '<td class="amt '+(p.currentAccountBalance>=0?'credit':'debit')+'">'+money(p.currentAccountBalance)+'</td></tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">لا يوجد شركاء</td></tr>';
+
+    return '<div class="page-head"><h2>تقرير مشروع</h2><p>نظرة كاملة على أداء المشروع ونصيب كل شريك.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="report-project-select">'+pOptions+'</select></div>'+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">إجمالي الإيرادات</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي المصروفات</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
+      '<div class="stat"><div class="label">صافي الربح</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+    '</div>'+
+    '<div class="panel"><div class="panel-head"><h3>نصيب الشركاء</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>الشريك</th><th>النسبة</th><th>نصيبه من صافي الربح</th><th>رصيد حسابه الجاري</th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+    '</div></div>';
+  }
+
+  function pageSettings(){
+    return '<div class="page-head"><h2>إعدادات حسابي</h2></div>'+
+    '<div class="panel"><div class="panel-head"><h3>تغيير كلمة مرور حسابي</h3></div><div class="panel-body">'+
+      '<div id="settings-msg"></div>'+
+      '<form id="change-pw-form">'+
+        '<div class="form-row">'+
+          '<div class="field"><label>كلمة المرور الحالية</label><input type="password" id="cp-old" required></div>'+
+          '<div class="field"><label>كلمة المرور الجديدة</label><input type="password" id="cp-new" required></div>'+
+        '</div><button class="btn" type="submit">تحديث كلمة المرور</button>'+
+      '</form>'+
+    '</div></div>';
+  }
+
+  function bindAdminPageEvents(){
+    var apf = document.getElementById('add-partner-form');
+    if(apf) apf.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var name = document.getElementById('np-name').value.trim();
+      var username = document.getElementById('np-user').value.trim();
+      var password = document.getElementById('np-pass').value;
+      try{ await api('POST','/partners',{name:name,username:username,password:password}); loadAdminPage(); }
+      catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-reset-pw]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var pid = btn.getAttribute('data-reset-pw');
+        var val = document.getElementById('pw-'+pid).value;
+        if(!val || val.length<4){ alert('اكتب كلمة مرور من 4 حروف على الأقل'); return; }
+        try{ await api('PUT','/partners/'+pid+'/password',{password:val}); alert('تم تغيير كلمة المرور.'); loadAdminPage(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-del-partner]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        if(!confirm('حذف هذا الشريك سيزيل بياناته من المشاريع والحساب الجاري. متابعة؟')) return;
+        try{ await api('DELETE','/partners/'+btn.getAttribute('data-del-partner')); loadAdminPage(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+
+    document.querySelectorAll('.np-partner-check').forEach(function(chk){
+      chk.addEventListener('change', function(){
+        var row = chk.closest('.partner-pct-row');
+        var pctInput = row.querySelector('.np-partner-pct');
+        pctInput.style.display = chk.checked ? 'block' : 'none';
+        if(!chk.checked) pctInput.value='';
+        updatePctTotal();
+      });
+    });
+    document.querySelectorAll('.np-partner-pct').forEach(function(inp){ inp.addEventListener('input', updatePctTotal); });
+    function updatePctTotal(){
+      var box = document.getElementById('pct-total-box'); if(!box) return;
+      var total = 0;
+      document.querySelectorAll('.np-partner-check:checked').forEach(function(chk){
+        var row = chk.closest('.partner-pct-row');
+        total += parseFloat(row.querySelector('.np-partner-pct').value)||0;
+      });
+      box.textContent = 'إجمالي النسب: '+total+'%';
+      box.className = 'pct-total ' + (Math.abs(total-100)<0.001 ? 'ok' : 'bad');
+    }
+    var apjf = document.getElementById('add-project-form');
+    if(apjf) apjf.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var name = document.getElementById('npj-name').value.trim();
+      var shares = [], total=0;
+      document.querySelectorAll('.np-partner-check:checked').forEach(function(chk){
+        var row = chk.closest('.partner-pct-row');
+        var pct = parseFloat(row.querySelector('.np-partner-pct').value)||0;
+        shares.push({partnerId:Number(chk.value), percentage:pct}); total+=pct;
+      });
+      if(shares.length===0){ alert('اختر شريكًا واحدًا على الأقل.'); return; }
+      if(Math.abs(total-100)>0.01 && !confirm('إجمالي النسب '+total+'% وليس 100%. متابعة؟')) return;
+      try{ await api('POST','/projects',{name:name,shares:shares}); loadAdminPage(); }
+      catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-project]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        if(!confirm('سيتم حذف المشروع وكل حركاته المالية. متابعة؟')) return;
+        try{ await api('DELETE','/projects/'+btn.getAttribute('data-del-project')); loadAdminPage(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+
+    var eps = document.getElementById('entries-project-select');
+    if(eps) eps.addEventListener('change', function(){ uiState.entriesProjectId = Number(eps.value); loadAdminPage(); });
+    var aef = document.getElementById('add-entry-form');
+    if(aef) aef.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var body = { projectId: uiState.entriesProjectId, kind: document.getElementById('ne-kind').value,
+        amount: parseFloat(document.getElementById('ne-amount').value), date: document.getElementById('ne-date').value,
+        description: document.getElementById('ne-desc').value.trim() };
+      try{ await api('POST','/entries',body); loadAdminPage(); } catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-entry]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        try{ await api('DELETE','/entries/'+btn.getAttribute('data-del-entry')); loadAdminPage(); } catch(e){ alert(e.message); }
+      });
+    });
+
+    var cps = document.getElementById('ca-project-select');
+    if(cps) cps.addEventListener('change', function(){ uiState.caProjectId = Number(cps.value); loadAdminPage(); });
+    var acf = document.getElementById('add-ca-form');
+    if(acf) acf.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var body = { projectId: uiState.caProjectId, partnerId: Number(document.getElementById('nca-partner').value),
+        kind: document.getElementById('nca-kind').value, amount: parseFloat(document.getElementById('nca-amount').value),
+        date: document.getElementById('nca-date').value, description: document.getElementById('nca-desc').value.trim() };
+      try{ await api('POST','/current-account',body); loadAdminPage(); } catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-ca]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        try{ await api('DELETE','/current-account/'+btn.getAttribute('data-del-ca')); loadAdminPage(); } catch(e){ alert(e.message); }
+      });
+    });
+
+    var rps = document.getElementById('report-project-select');
+    if(rps) rps.addEventListener('change', function(){ uiState.reportProjectId = Number(rps.value); loadAdminPage(); });
+
+    var cpf = document.getElementById('change-pw-form');
+    if(cpf) cpf.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var msg = document.getElementById('settings-msg');
+      try{
+        await api('PUT','/me/password',{oldPassword:document.getElementById('cp-old').value, newPassword:document.getElementById('cp-new').value});
+        msg.innerHTML = '<div class="ok-box">تم تحديث كلمة المرور بنجاح.</div>';
+        cpf.reset();
+      }catch(e){ msg.innerHTML = '<div class="error-box">'+escapeHtml(e.message)+'</div>'; }
+    });
+  }
+
+  // ================= PARTNER =================
+  function renderPartnerShell(){
+    return '<div class="shell"><div class="sidebar">'+
+      '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
+      '<div class="who">مرحبًا<b>'+escapeHtml(currentUser.name)+'</b></div>'+
+      '<div class="sidebar-foot">'+
+        '<button class="btn ghost sm" id="p-settings-btn">تغيير كلمة المرور</button>'+
+        '<button class="logout-link" id="logout-btn">تسجيل الخروج</button>'+
+      '</div>'+
+    '</div><div class="main" id="main-area"><div class="empty">جارِ التحميل…</div></div></div>';
+  }
+  function bindPartnerShell(){
+    document.getElementById('logout-btn').addEventListener('click', logout);
+    document.getElementById('p-settings-btn').addEventListener('click', function(){
+      document.getElementById('main-area').innerHTML = pageSettings();
+      bindAdminPageEvents();
+    });
+    loadPartnerDashboard();
+  }
+  async function loadPartnerDashboard(){
+    var main = document.getElementById('main-area');
+    try{
+      cache.meProjects = await api('GET','/me/projects');
+      if(!partnerActiveProject && cache.meProjects.length) partnerActiveProject = cache.meProjects[0].id;
+      if(cache.meProjects.length===0){
+        main.innerHTML = '<div class="page-head"><h2>حسابك</h2></div><div class="panel"><div class="empty">لم يتم ربطك بأي مشروع بعد. تواصل مع المدير المسؤول عن إدخال البيانات.</div></div>';
+        return;
+      }
+      var rep = await api('GET','/report/'+partnerActiveProject);
+      var caEntries = await api('GET','/current-account?projectId='+partnerActiveProject);
+      var entries = await api('GET','/entries?projectId='+partnerActiveProject);
+      main.innerHTML = renderPartnerDashboard(rep, caEntries, entries);
+      document.querySelectorAll('[data-project]').forEach(function(chip){
+        chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
+      });
+    }catch(e){
+      main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
+    }
+  }
+  function renderPartnerDashboard(rep, caEntries, entries){
+    var myShare = rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {};
+    var projectName = cache.meProjects.find(function(p){return p.id===partnerActiveProject;}).name;
+    var chips = cache.meProjects.map(function(p){
+      return '<div class="chip'+(p.id===partnerActiveProject?' active':'')+'" data-project="'+p.id+'">'+escapeHtml(p.name)+'</div>';
+    }).join('');
+
+    var kindLabel = {deposit:'إيداع', withdrawal:'سحب', distribution:'توزيع أرباح'};
+    var kindTag = {deposit:'dep', withdrawal:'wd', distribution:'dist'};
+    var caRows = caEntries.map(function(c){
+      var isCredit = c.kind!=='withdrawal';
+      return '<tr><td>'+fmtDate(c.entry_date)+'</td><td><span class="tag '+kindTag[c.kind]+'">'+kindLabel[c.kind]+'</span></td>'+
+        '<td>'+escapeHtml(c.description||'—')+'</td>'+
+        '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td></tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على حسابك الجاري بعد</td></tr>';
+
+    var entriesRows = entries.map(function(e){
+      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
+        '<td>'+escapeHtml(e.description||'—')+'</td>'+
+        '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td></tr>';
+    }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على هذا المشروع بعد</td></tr>';
+
+    return '<div class="page-head"><h2>حسابك</h2><p>البيانات محدّثة مباشرة من قاعدة البيانات المركزية.</p></div>'+
+    (cache.meProjects.length>1 ? '<div class="select-projects">'+chips+'</div>' : '')+
+    '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(projectName)+'»</div>'+
+      '<div class="v">'+money(myShare.currentAccountBalance||0)+'</div></div>'+
+      '<div class="pct">نسبتك في المشروع: '+(myShare.percentage||0)+'%</div></div>'+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
+      '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+      '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
+    '</div>'+
+    '<div class="panel"><div class="panel-head"><h3>حركات حسابك الجاري</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+caRows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
+    '</div></div>';
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
