@@ -59,6 +59,15 @@ async function initDb() {
       entry_date DATE NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE entries ADD COLUMN IF NOT EXISTS category TEXT;
+    CREATE TABLE IF NOT EXISTS expense_payments (
+      id SERIAL PRIMARY KEY,
+      entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+      amount NUMERIC NOT NULL,
+      payment_date DATE NOT NULL,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS current_account (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -67,6 +76,33 @@ async function initDb() {
       amount NUMERIC NOT NULL,
       description TEXT,
       entry_date DATE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      unit TEXT,
+      quantity_in NUMERIC NOT NULL DEFAULT 0,
+      unit_price NUMERIC NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS inventory_sales (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      item_id INTEGER NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+      quantity NUMERIC NOT NULL,
+      sale_amount NUMERIC NOT NULL,
+      sale_date DATE NOT NULL,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS sale_collections (
+      id SERIAL PRIMARY KEY,
+      sale_id INTEGER NOT NULL REFERENCES inventory_sales(id) ON DELETE CASCADE,
+      amount NUMERIC NOT NULL,
+      collection_date DATE NOT NULL,
+      description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
@@ -284,19 +320,136 @@ app.get('/api/entries', auth, async (req, res) => {
 });
 
 app.post('/api/entries', auth, requireAdmin, async (req, res) => {
-  const { projectId, kind, amount, description, date } = req.body || {};
+  const { projectId, kind, amount, description, date, category } = req.body || {};
   if (!projectId || !['revenue', 'expense'].includes(kind) || !amount || !date) {
     return res.status(400).json({ error: 'بيانات ناقصة' });
   }
   const { rows } = await pool.query(
-    'INSERT INTO entries (project_id, kind, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-    [projectId, kind, amount, description || null, date]
+    'INSERT INTO entries (project_id, kind, amount, description, entry_date, category) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    [projectId, kind, amount, description || null, date, kind === 'expense' ? (category || 'أخرى') : null]
   );
   res.json(rows[0]);
 });
 
 app.delete('/api/entries/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM entries WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Expense payments (تحصيل/سداد المصروفات — المتبقي من كل مصروف)
+// ---------------------------------------------------------------------------
+app.get('/api/expense-payments', auth, async (req, res) => {
+  const projectId = req.query.projectId;
+  if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
+  if (!(await assertProjectAccess(req, res, projectId))) return;
+  const { rows } = await pool.query(`
+    SELECT ep.* FROM expense_payments ep
+    JOIN entries e ON e.id = ep.entry_id
+    WHERE e.project_id = $1
+    ORDER BY ep.payment_date DESC, ep.created_at DESC
+  `, [projectId]);
+  res.json(rows);
+});
+
+app.post('/api/expense-payments', auth, requireAdmin, async (req, res) => {
+  const { entryId, amount, date, description } = req.body || {};
+  if (!entryId || !amount || !date) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { rows } = await pool.query(
+    'INSERT INTO expense_payments (entry_id, amount, payment_date, description) VALUES ($1,$2,$3,$4) RETURNING *',
+    [entryId, amount, date, description || null]
+  );
+  res.json(rows[0]);
+});
+
+app.delete('/api/expense-payments/:id', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM expense_payments WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Inventory: items, sales, and collections per project
+// ---------------------------------------------------------------------------
+app.get('/api/inventory/items', auth, async (req, res) => {
+  const projectId = req.query.projectId;
+  if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
+  if (!(await assertProjectAccess(req, res, projectId))) return;
+  const { rows } = await pool.query(
+    'SELECT * FROM inventory_items WHERE project_id=$1 ORDER BY id',
+    [projectId]
+  );
+  res.json(rows);
+});
+
+app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
+  const { projectId, name, unit, quantityIn, unitPrice } = req.body || {};
+  if (!projectId || !name || quantityIn === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { rows } = await pool.query(
+    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    [projectId, name, unit || null, quantityIn, unitPrice || 0]
+  );
+  res.json(rows[0]);
+});
+
+app.delete('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM inventory_items WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/inventory/sales', auth, async (req, res) => {
+  const projectId = req.query.projectId;
+  if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
+  if (!(await assertProjectAccess(req, res, projectId))) return;
+  const { rows } = await pool.query(`
+    SELECT s.*, i.name AS item_name, i.unit AS item_unit
+    FROM inventory_sales s JOIN inventory_items i ON i.id = s.item_id
+    WHERE s.project_id=$1 ORDER BY s.sale_date DESC, s.created_at DESC
+  `, [projectId]);
+  res.json(rows);
+});
+
+app.post('/api/inventory/sales', auth, requireAdmin, async (req, res) => {
+  const { projectId, itemId, quantity, saleAmount, saleDate, description } = req.body || {};
+  if (!projectId || !itemId || !quantity || !saleAmount || !saleDate) {
+    return res.status(400).json({ error: 'بيانات ناقصة' });
+  }
+  const { rows } = await pool.query(
+    'INSERT INTO inventory_sales (project_id, item_id, quantity, sale_amount, sale_date, description) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    [projectId, itemId, quantity, saleAmount, saleDate, description || null]
+  );
+  res.json(rows[0]);
+});
+
+app.delete('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM inventory_sales WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/inventory/collections', auth, async (req, res) => {
+  const projectId = req.query.projectId;
+  if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
+  if (!(await assertProjectAccess(req, res, projectId))) return;
+  const { rows } = await pool.query(`
+    SELECT c.* FROM sale_collections c
+    JOIN inventory_sales s ON s.id = c.sale_id
+    WHERE s.project_id=$1
+    ORDER BY c.collection_date DESC, c.created_at DESC
+  `, [projectId]);
+  res.json(rows);
+});
+
+app.post('/api/inventory/collections', auth, requireAdmin, async (req, res) => {
+  const { saleId, amount, date, description } = req.body || {};
+  if (!saleId || !amount || !date) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { rows } = await pool.query(
+    'INSERT INTO sale_collections (sale_id, amount, collection_date, description) VALUES ($1,$2,$3,$4) RETURNING *',
+    [saleId, amount, date, description || null]
+  );
+  res.json(rows[0]);
+});
+
+app.delete('/api/inventory/collections/:id', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM sale_collections WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 });
 

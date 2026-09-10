@@ -97,6 +97,17 @@
   .del-x:hover{color:var(--debit);}
   .inline-pw{display:flex;gap:6px;align-items:center;}
   .inline-pw input{width:130px;padding:6px 8px;font-size:12.5px;}
+  .tag.cat{background:#eee6d6;color:#7a5c1c;}
+  .period-toggle{display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap;}
+  .period-chip{padding:7px 16px;border:1px solid var(--line);border-radius:20px;font-size:13px;cursor:pointer;background:#fff;color:var(--ink-soft);font-weight:600;}
+  .period-chip.active{background:var(--brass);color:#fff;border-color:var(--brass);}
+  .group-block{border:1px solid var(--line);border-radius:var(--radius);margin-bottom:12px;overflow:hidden;}
+  .group-head{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;background:#f2ecdb;font-size:13.5px;font-weight:700;color:var(--teal-deep);}
+  .group-head .amt{font-size:14.5px;}
+  .cat-chips{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;border-bottom:1px solid #ece6d4;background:#fbf8f0;}
+  .cat-chip{font-size:11.5px;padding:3px 10px;border-radius:14px;background:#eee6d6;color:#7a5c1c;font-weight:600;}
+  .remaining-pos{color:var(--debit);font-weight:700;}
+  .remaining-zero{color:var(--ink-soft);}
   @media (max-width:860px){
     .shell{flex-direction:column;}
     .sidebar{width:100%;flex-direction:row;align-items:center;padding:14px 18px;flex-wrap:wrap;}
@@ -119,8 +130,49 @@
   var loginError = "";
   var adminTab = 'partners';
   var partnerActiveProject = null;
-  var cache = { partners:[], projects:[], entries:{}, currentAccount:{}, meProjects:[], report:{} };
-  var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null };
+  var cache = { partners:[], projects:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
+    expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{} };
+  var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
+    analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month' };
+
+  var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
+
+  function pad2(n){ return n<10 ? '0'+n : ''+n; }
+  function periodKeyLabel(dateStr, period){
+    var d = new Date(dateStr+'T00:00:00');
+    if(isNaN(d)) return {key:'—', label:'—', sort:''};
+    if(period==='day'){
+      var k = dateStr;
+      return {key:k, label:fmtDate(dateStr), sort:k};
+    }
+    if(period==='week'){
+      var day = (d.getDay()+6)%7; // 0=Monday
+      var monday = new Date(d); monday.setDate(d.getDate()-day);
+      var k2 = monday.toISOString().slice(0,10);
+      return {key:k2, label:'أسبوع '+fmtDate(k2), sort:k2};
+    }
+    if(period==='year'){
+      var y = d.getFullYear();
+      return {key:''+y, label:'سنة '+y, sort:''+y};
+    }
+    // month default
+    var ym = d.getFullYear()+'-'+pad2(d.getMonth()+1);
+    var monthNames = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+    return {key:ym, label:monthNames[d.getMonth()]+' '+d.getFullYear(), sort:ym};
+  }
+  function groupEntriesByPeriod(entries, period){
+    var map = {};
+    entries.forEach(function(e){
+      var pk = periodKeyLabel(e.entry_date, period);
+      if(!map[pk.key]) map[pk.key] = {label:pk.label, sort:pk.sort, total:0, items:[], categories:{}};
+      map[pk.key].total += Number(e.amount);
+      map[pk.key].items.push(e);
+      if(e.category){
+        map[pk.key].categories[e.category] = (map[pk.key].categories[e.category]||0) + Number(e.amount);
+      }
+    });
+    return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){ return b.sort.localeCompare(a.sort); });
+  }
 
   function money(n){ n=Number(n)||0; return n.toLocaleString('ar-EG',{minimumFractionDigits:2,maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return ""; var d = new Date(s); if(isNaN(d)) return s; return d.toLocaleDateString('ar-EG',{day:'2-digit',month:'2-digit',year:'numeric'}); }
@@ -196,6 +248,8 @@
     {key:'partners', label:'الشركاء', icon:'👥'},
     {key:'projects', label:'المشاريع', icon:'📁'},
     {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
+    {key:'analytics', label:'تحليل الفترات', icon:'📈'},
+    {key:'inventory', label:'المخزون والتحصيل', icon:'📦'},
     {key:'current', label:'الحساب الجاري', icon:'💳'},
     {key:'report', label:'تقرير مشروع', icon:'📊'},
     {key:'settings', label:'إعدادات حسابي', icon:'⚙️'}
@@ -234,8 +288,30 @@
         if(cache.projects.length){
           if(!uiState.entriesProjectId) uiState.entriesProjectId = cache.projects[0].id;
           cache.entries[uiState.entriesProjectId] = await api('GET','/entries?projectId='+uiState.entriesProjectId);
+          cache.expensePayments[uiState.entriesProjectId] = await api('GET','/expense-payments?projectId='+uiState.entriesProjectId);
         }
         main.innerHTML = pageEntries();
+      }
+      else if(adminTab==='analytics'){
+        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
+        if(cache.projects.length){
+          if(!uiState.analyticsProjectId) uiState.analyticsProjectId = cache.projects[0].id;
+          cache.entries[uiState.analyticsProjectId] = await api('GET','/entries?projectId='+uiState.analyticsProjectId);
+        }
+        main.innerHTML = pageAnalytics();
+      }
+      else if(adminTab==='inventory'){
+        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
+        if(cache.projects.length){
+          if(!uiState.invProjectId) uiState.invProjectId = cache.projects[0].id;
+          var pid = uiState.invProjectId;
+          cache.inventoryItems[pid] = await api('GET','/inventory/items?projectId='+pid);
+          cache.inventorySales[pid] = await api('GET','/inventory/sales?projectId='+pid);
+          cache.inventoryCollections[pid] = await api('GET','/inventory/collections?projectId='+pid);
+          cache.entries[pid] = cache.entries[pid] || await api('GET','/entries?projectId='+pid);
+          cache.expensePayments[pid] = await api('GET','/expense-payments?projectId='+pid);
+        }
+        main.innerHTML = pageInventory();
       }
       else if(adminTab==='current'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -318,26 +394,46 @@
     if(cache.projects.length===0) return '<div class="page-head"><h2>الإيرادات والمصروفات</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
     var options = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.entriesProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
     var list = (cache.entries[uiState.entriesProjectId]||[]);
+    var payments = (cache.expensePayments[uiState.entriesProjectId]||[]);
+    var paidByEntry = {};
+    payments.forEach(function(p){ paidByEntry[p.entry_id] = (paidByEntry[p.entry_id]||0) + Number(p.amount); });
+
+    var catOptions = EXPENSE_CATEGORIES.map(function(c){return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>';}).join('');
+
     var rows = list.map(function(e){
+      var extra = '';
+      if(e.kind==='expense'){
+        var paid = paidByEntry[e.id]||0;
+        var remaining = Number(e.amount) - paid;
+        extra = '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>'+
+          '<td class="amt credit">'+money(paid)+'</td>'+
+          '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
+          '<td><button class="btn ghost sm" data-pay-entry="'+e.id+'" data-remaining="'+remaining.toFixed(2)+'">تسديد</button></td>';
+      } else {
+        extra = '<td>—</td><td>—</td><td>—</td><td></td>';
+      }
       return '<tr><td>'+fmtDate(e.entry_date)+'</td>'+
         '<td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
         '<td>'+escapeHtml(e.description||'—')+'</td>'+
         '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td>'+
+        extra+
         '<td><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="5" class="empty">لا توجد حركات بعد لهذا المشروع</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">لا توجد حركات بعد لهذا المشروع</td></tr>';
 
-    return '<div class="page-head"><h2>الإيرادات والمصروفات</h2><p>سجّل كل إيراد أو مصروف على المشروع.</p></div>'+
+    return '<div class="page-head"><h2>الإيرادات والمصروفات</h2><p>سجّل كل إيراد أو مصروف، وصنّف المصروفات وتابع المتبقي من كل مصروف.</p></div>'+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="entries-project-select">'+options+'</select></div>'+
     '<div class="panel"><div class="panel-head"><h3>إضافة حركة</h3></div><div class="panel-body">'+
       '<form id="add-entry-form"><div class="form-row three">'+
         '<div class="field"><label>النوع</label><select id="ne-kind"><option value="revenue">إيراد</option><option value="expense">مصروف</option></select></div>'+
         '<div class="field"><label>المبلغ</label><input type="number" id="ne-amount" min="0" step="0.01" required></div>'+
         '<div class="field"><label>التاريخ</label><input type="date" id="ne-date" value="'+todayStr()+'" required></div>'+
-      '</div><div class="field"><label>الوصف / البيان</label><input type="text" id="ne-desc"></div>'+
+      '</div>'+
+      '<div class="form-row" id="ne-cat-row"><div class="field"><label>تصنيف المصروف</label><select id="ne-category">'+catOptions+'</select></div>'+
+        '<div class="field"><label>الوصف / البيان</label><input type="text" id="ne-desc"></div></div>'+
       '<button class="btn" type="submit">إضافة</button></form>'+
     '</div></div>'+
-    '<div class="panel"><div class="panel-head"><h3>سجل الحركات</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<div class="panel"><div class="panel-head"><h3>سجل الحركات</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>';
   }
 
@@ -412,6 +508,177 @@
     '</div>'+
     '<div class="panel"><div class="panel-head"><h3>نصيب الشركاء</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>الشريك</th><th>النسبة</th><th>نصيبه من صافي الربح</th><th>رصيد حسابه الجاري</th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+    '</div></div>';
+  }
+
+  function pageAnalytics(){
+    if(cache.projects.length===0) return '<div class="page-head"><h2>تحليل الفترات</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
+    var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.analyticsProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
+    var proj = cache.projects.find(function(p){return p.id==uiState.analyticsProjectId;});
+    var list = cache.entries[uiState.analyticsProjectId] || [];
+    var period = uiState.analyticsPeriod;
+    var periods = [{k:'day',l:'يومي'},{k:'week',l:'أسبوعي'},{k:'month',l:'شهري'},{k:'year',l:'سنوي'}];
+    var periodChips = periods.map(function(p){
+      return '<div class="period-chip'+(period===p.k?' active':'')+'" data-period="'+p.k+'">'+p.l+'</div>';
+    }).join('');
+
+    var revEntries = list.filter(function(e){return e.kind==='revenue';});
+    var expEntries = list.filter(function(e){return e.kind==='expense';});
+    var revGroups = groupEntriesByPeriod(revEntries, period);
+    var expGroups = groupEntriesByPeriod(expEntries, period);
+
+    var projectName = proj ? proj.name : '';
+
+    function renderRevGroup(g){
+      var rows = g.items.map(function(e){
+        return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(projectName)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+
+          '<td class="amt credit">+'+money(e.amount)+'</td></tr>';
+      }).join('');
+      return '<div class="group-block"><div class="group-head"><span>'+escapeHtml(g.label)+'</span><span class="amt credit">'+money(g.total)+'</span></div>'+
+        '<table><thead><tr><th>التاريخ</th><th>المشروع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+    function renderExpGroup(g){
+      var catChips = Object.keys(g.categories).map(function(c){
+        return '<span class="cat-chip">'+escapeHtml(c)+': '+money(g.categories[c])+'</span>';
+      }).join('');
+      var rows = g.items.map(function(e){
+        return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+(e.category?escapeHtml(e.category):'—')+'</td>'+
+          '<td>'+escapeHtml(e.description||'—')+'</td><td class="amt debit">-'+money(e.amount)+'</td></tr>';
+      }).join('');
+      return '<div class="group-block"><div class="group-head"><span>'+escapeHtml(g.label)+'</span><span class="amt debit">'+money(g.total)+'</span></div>'+
+        (catChips?('<div class="cat-chips">'+catChips+'</div>'):'')+
+        '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+
+    return '<div class="page-head"><h2>تحليل الفترات</h2><p>الإيرادات والمصروفات مقسّمة يوميًا وأسبوعيًا وشهريًا وسنويًا.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:14px;"><label>المشروع</label><select id="analytics-project-select">'+pOptions+'</select></div>'+
+    '<div class="period-toggle">'+periodChips+'</div>'+
+    '<div class="panel"><div class="panel-head"><h3>الإيرادات</h3></div><div class="panel-body">'+
+      (revGroups.length ? revGroups.map(renderRevGroup).join('') : '<div class="empty">لا توجد إيرادات في هذا المشروع بعد</div>')+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>المصروفات حسب التصنيف</h3></div><div class="panel-body">'+
+      (expGroups.length ? expGroups.map(renderExpGroup).join('') : '<div class="empty">لا توجد مصروفات في هذا المشروع بعد</div>')+
+    '</div></div>';
+  }
+
+  function pageInventory(){
+    if(cache.projects.length===0) return '<div class="page-head"><h2>المخزون والتحصيل</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
+    var pid = uiState.invProjectId;
+    var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==pid?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
+    var items = cache.inventoryItems[pid] || [];
+    var sales = cache.inventorySales[pid] || [];
+    var collections = cache.inventoryCollections[pid] || [];
+
+    var soldByItem = {};
+    sales.forEach(function(s){ soldByItem[s.item_id] = (soldByItem[s.item_id]||0) + Number(s.quantity); });
+    var collectedBySale = {};
+    collections.forEach(function(c){ collectedBySale[c.sale_id] = (collectedBySale[c.sale_id]||0) + Number(c.amount); });
+
+    var itemRows = items.map(function(it){
+      var sold = soldByItem[it.id]||0;
+      var remainingQty = Number(it.quantity_in) - sold;
+      return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
+        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td>'+
+        '<td class="mono '+(remainingQty<0?'debit':'')+'">'+remainingQty+'</td>'+
+        '<td class="amt">'+money(it.unit_price)+'</td>'+
+        '<td><button class="del-x" data-del-item="'+it.id+'">✕</button></td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
+
+    var itemOptions = items.map(function(it){return '<option value="'+it.id+'">'+escapeHtml(it.name)+' ('+(Number(it.quantity_in)-(soldByItem[it.id]||0))+' متبقي)</option>';}).join('');
+
+    var totalSold=0, totalCollected=0;
+    var saleRows = sales.map(function(s){
+      var collected = collectedBySale[s.id]||0;
+      var remaining = Number(s.sale_amount) - collected;
+      totalSold += Number(s.sale_amount); totalCollected += collected;
+      return '<tr><td>'+fmtDate(s.sale_date)+'</td><td>'+escapeHtml(s.item_name)+'</td>'+
+        '<td class="mono">'+s.quantity+'</td>'+
+        '<td class="amt">'+money(s.sale_amount)+'</td>'+
+        '<td class="amt credit">'+money(collected)+'</td>'+
+        '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
+        '<td><button class="btn ghost sm" data-collect-sale="'+s.id+'" data-remaining="'+remaining.toFixed(2)+'">تحصيل</button></td>'+
+        '<td><button class="del-x" data-del-sale="'+s.id+'">✕</button></td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">لا توجد مبيعات مسجلة بعد</td></tr>';
+    var totalRemaining = totalSold - totalCollected;
+
+    var period = uiState.invCollectionPeriod;
+    var periods = [{k:'day',l:'يومي'},{k:'week',l:'أسبوعي'},{k:'month',l:'شهري'},{k:'year',l:'سنوي'}];
+    var periodChips = periods.map(function(p){
+      return '<div class="period-chip'+(period===p.k?' active':'')+'" data-collection-period="'+p.k+'">'+p.l+'</div>';
+    }).join('');
+    var collectionsWithDate = collections.map(function(c){ return {entry_date:c.collection_date, amount:c.amount, description:c.description}; });
+    var collGroups = groupEntriesByPeriod(collectionsWithDate, period);
+    var collGroupsHtml = collGroups.map(function(g){
+      var rows = g.items.map(function(c){
+        return '<tr><td>'+fmtDate(c.entry_date)+'</td><td>'+escapeHtml(c.description||'—')+'</td><td class="amt credit">+'+money(c.amount)+'</td></tr>';
+      }).join('');
+      return '<div class="group-block"><div class="group-head"><span>'+escapeHtml(g.label)+'</span><span class="amt credit">'+money(g.total)+'</span></div>'+
+        '<table><thead><tr><th>التاريخ</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }).join('') || '<div class="empty">لا توجد تحصيلات مسجلة بعد</div>';
+
+    // expense remaining summary
+    var expEntries = (cache.entries[pid]||[]).filter(function(e){return e.kind==='expense';});
+    var payments = cache.expensePayments[pid] || [];
+    var paidByEntry = {};
+    payments.forEach(function(p){ paidByEntry[p.entry_id] = (paidByEntry[p.entry_id]||0) + Number(p.amount); });
+    var totalExpense=0, totalPaid=0;
+    var expRows = expEntries.map(function(e){
+      var paid = paidByEntry[e.id]||0;
+      var remaining = Number(e.amount)-paid;
+      totalExpense += Number(e.amount); totalPaid += paid;
+      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+(e.category?escapeHtml(e.category):'—')+'</td>'+
+        '<td>'+escapeHtml(e.description||'—')+'</td><td class="amt debit">'+money(e.amount)+'</td>'+
+        '<td class="amt credit">'+money(paid)+'</td>'+
+        '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصروفات مسجلة</td></tr>';
+    var totalExpRemaining = totalExpense-totalPaid;
+
+    return '<div class="page-head"><h2>المخزون والتحصيل</h2><p>ما تم بيعه وما تبقى من المخزون، وما تم تحصيله من المبيعات وما تبقى، وكذلك المتبقي من المصروفات.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
+
+    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>سعر الوحدة</th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة صنف جديد للمخزون</h3></div><div class="panel-body">'+
+      '<form id="add-item-form"><div class="form-row three">'+
+        '<div class="field"><label>اسم الصنف</label><input type="text" id="ni-name" required></div>'+
+        '<div class="field"><label>الوحدة</label><input type="text" id="ni-unit" placeholder="قطعة / كرتونة / كجم"></div>'+
+        '<div class="field"><label>الكمية الداخلة للمخزون</label><input type="number" id="ni-qty" min="0" step="0.01" required></div>'+
+      '</div><div class="field" style="max-width:240px;"><label>سعر بيع الوحدة</label><input type="number" id="ni-price" min="0" step="0.01"></div>'+
+      '<button class="btn" type="submit">إضافة الصنف</button></form>'+
+    '</div></div>'+
+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemaining>0.001?'debit':'credit')+'">'+money(totalRemaining)+'</div></div>'+
+    '</div>'+
+    '<div class="panel"><div class="panel-head"><h3>المبيعات</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>التاريخ</th><th>الصنف</th><th>الكمية</th><th>قيمة البيع</th><th>المحصّل</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+saleRows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>تسجيل عملية بيع</h3></div><div class="panel-body">'+
+      (items.length===0 ? '<div class="empty">أضف صنفًا للمخزون أولاً.</div>' :
+      '<form id="add-sale-form"><div class="form-row three">'+
+        '<div class="field"><label>الصنف</label><select id="ns-item">'+itemOptions+'</select></div>'+
+        '<div class="field"><label>الكمية المباعة</label><input type="number" id="ns-qty" min="0" step="0.01" required></div>'+
+        '<div class="field"><label>قيمة البيع الإجمالية</label><input type="number" id="ns-amount" min="0" step="0.01" required></div>'+
+      '</div><div class="form-row">'+
+        '<div class="field"><label>تاريخ البيع</label><input type="date" id="ns-date" value="'+todayStr()+'" required></div>'+
+        '<div class="field"><label>ملاحظات</label><input type="text" id="ns-desc"></div>'+
+      '</div><button class="btn" type="submit">تسجيل البيع</button></form>')+
+    '</div></div>'+
+
+    '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تفصيل التحصيل على الفترات</h2></div>'+
+    '<div class="period-toggle">'+periodChips+'</div>'+
+    '<div class="panel"><div class="panel-body">'+collGroupsHtml+'</div></div>'+
+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">إجمالي المصروفات</div><div class="val debit">'+money(totalExpense)+'</div></div>'+
+      '<div class="stat"><div class="label">المدفوع من المصروفات</div><div class="val credit">'+money(totalPaid)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
+    '</div>'+
+    '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>';
   }
 
@@ -500,17 +767,37 @@
 
     var eps = document.getElementById('entries-project-select');
     if(eps) eps.addEventListener('change', function(){ uiState.entriesProjectId = Number(eps.value); loadAdminPage(); });
+    var neKind = document.getElementById('ne-kind');
+    var neCatRow = document.getElementById('ne-cat-row');
+    function syncCatRow(){ if(neCatRow) neCatRow.style.display = (neKind && neKind.value==='expense') ? 'grid' : 'none'; }
+    if(neKind){ syncCatRow(); neKind.addEventListener('change', syncCatRow); }
     var aef = document.getElementById('add-entry-form');
     if(aef) aef.addEventListener('submit', async function(ev){
       ev.preventDefault();
-      var body = { projectId: uiState.entriesProjectId, kind: document.getElementById('ne-kind').value,
+      var kind = document.getElementById('ne-kind').value;
+      var body = { projectId: uiState.entriesProjectId, kind: kind,
         amount: parseFloat(document.getElementById('ne-amount').value), date: document.getElementById('ne-date').value,
         description: document.getElementById('ne-desc').value.trim() };
+      if(kind==='expense'){ body.category = document.getElementById('ne-category').value; }
       try{ await api('POST','/entries',body); loadAdminPage(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-entry]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         try{ await api('DELETE','/entries/'+btn.getAttribute('data-del-entry')); loadAdminPage(); } catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-pay-entry]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var entryId = btn.getAttribute('data-pay-entry');
+        var maxRemaining = btn.getAttribute('data-remaining');
+        var amountStr = prompt('مبلغ السداد (المتبقي: '+maxRemaining+')', maxRemaining);
+        if(amountStr===null) return;
+        var amount = parseFloat(amountStr);
+        if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
+        var dateStr = prompt('تاريخ السداد (YYYY-MM-DD)', todayStr());
+        if(dateStr===null) return;
+        try{ await api('POST','/expense-payments',{entryId:Number(entryId), amount:amount, date:dateStr}); loadAdminPage(); }
+        catch(e){ alert(e.message); }
       });
     });
 
@@ -530,8 +817,61 @@
       });
     });
 
+    var aps = document.getElementById('analytics-project-select');
+    if(aps) aps.addEventListener('change', function(){ uiState.analyticsProjectId = Number(aps.value); loadAdminPage(); });
+    document.querySelectorAll('[data-period]').forEach(function(chip){
+      chip.addEventListener('click', function(){ uiState.analyticsPeriod = chip.getAttribute('data-period'); loadAdminPage(); });
+    });
+
     var rps = document.getElementById('report-project-select');
     if(rps) rps.addEventListener('change', function(){ uiState.reportProjectId = Number(rps.value); loadAdminPage(); });
+
+    var ips = document.getElementById('inv-project-select');
+    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); loadAdminPage(); });
+    var aif = document.getElementById('add-item-form');
+    if(aif) aif.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var body = { projectId: uiState.invProjectId, name: document.getElementById('ni-name').value.trim(),
+        unit: document.getElementById('ni-unit').value.trim(), quantityIn: parseFloat(document.getElementById('ni-qty').value),
+        unitPrice: parseFloat(document.getElementById('ni-price').value)||0 };
+      try{ await api('POST','/inventory/items',body); loadAdminPage(); } catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-item]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        if(!confirm('حذف هذا الصنف سيحذف كل عمليات بيعه المسجلة. متابعة؟')) return;
+        try{ await api('DELETE','/inventory/items/'+btn.getAttribute('data-del-item')); loadAdminPage(); } catch(e){ alert(e.message); }
+      });
+    });
+    var asf = document.getElementById('add-sale-form');
+    if(asf) asf.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var body = { projectId: uiState.invProjectId, itemId: Number(document.getElementById('ns-item').value),
+        quantity: parseFloat(document.getElementById('ns-qty').value), saleAmount: parseFloat(document.getElementById('ns-amount').value),
+        saleDate: document.getElementById('ns-date').value, description: document.getElementById('ns-desc').value.trim() };
+      try{ await api('POST','/inventory/sales',body); loadAdminPage(); } catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-sale]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        try{ await api('DELETE','/inventory/sales/'+btn.getAttribute('data-del-sale')); loadAdminPage(); } catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-collect-sale]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var saleId = btn.getAttribute('data-collect-sale');
+        var maxRemaining = btn.getAttribute('data-remaining');
+        var amountStr = prompt('مبلغ التحصيل (المتبقي: '+maxRemaining+')', maxRemaining);
+        if(amountStr===null) return;
+        var amount = parseFloat(amountStr);
+        if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
+        var dateStr = prompt('تاريخ التحصيل (YYYY-MM-DD)', todayStr());
+        if(dateStr===null) return;
+        try{ await api('POST','/inventory/collections',{saleId:Number(saleId), amount:amount, date:dateStr}); loadAdminPage(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-collection-period]').forEach(function(chip){
+      chip.addEventListener('click', function(){ uiState.invCollectionPeriod = chip.getAttribute('data-collection-period'); loadAdminPage(); });
+    });
 
     var cpf = document.getElementById('change-pw-form');
     if(cpf) cpf.addEventListener('submit', async function(ev){
@@ -576,7 +916,11 @@
       var rep = await api('GET','/report/'+partnerActiveProject);
       var caEntries = await api('GET','/current-account?projectId='+partnerActiveProject);
       var entries = await api('GET','/entries?projectId='+partnerActiveProject);
-      main.innerHTML = renderPartnerDashboard(rep, caEntries, entries);
+      var expPayments = await api('GET','/expense-payments?projectId='+partnerActiveProject);
+      var invItems = await api('GET','/inventory/items?projectId='+partnerActiveProject);
+      var invSales = await api('GET','/inventory/sales?projectId='+partnerActiveProject);
+      var invCollections = await api('GET','/inventory/collections?projectId='+partnerActiveProject);
+      main.innerHTML = renderPartnerDashboard(rep, caEntries, entries, expPayments, invItems, invSales, invCollections);
       document.querySelectorAll('[data-project]').forEach(function(chip){
         chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
       });
@@ -584,7 +928,7 @@
       main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
     }
   }
-  function renderPartnerDashboard(rep, caEntries, entries){
+  function renderPartnerDashboard(rep, caEntries, entries, expPayments, invItems, invSales, invCollections){
     var myShare = rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {};
     var projectName = cache.meProjects.find(function(p){return p.id===partnerActiveProject;}).name;
     var chips = cache.meProjects.map(function(p){
@@ -602,9 +946,29 @@
 
     var entriesRows = entries.map(function(e){
       return '<tr><td>'+fmtDate(e.entry_date)+'</td><td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
-        '<td>'+escapeHtml(e.description||'—')+'</td>'+
+        '<td>'+escapeHtml(e.description||'—')+(e.category?(' <span class="tag cat">'+escapeHtml(e.category)+'</span>'):'')+'</td>'+
         '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td></tr>';
     }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على هذا المشروع بعد</td></tr>';
+
+    // Inventory summary (read-only)
+    var soldByItem = {}; invSales.forEach(function(s){ soldByItem[s.item_id]=(soldByItem[s.item_id]||0)+Number(s.quantity); });
+    var collectedBySale = {}; invCollections.forEach(function(c){ collectedBySale[c.sale_id]=(collectedBySale[c.sale_id]||0)+Number(c.amount); });
+    var invRows = invItems.map(function(it){
+      var sold = soldByItem[it.id]||0;
+      var remainingQty = Number(it.quantity_in)-sold;
+      return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
+        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td><td class="mono">'+remainingQty+'</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">لا يوجد مخزون مسجل لهذا المشروع</td></tr>';
+    var totalSold=0, totalCollected=0;
+    invSales.forEach(function(s){ totalSold += Number(s.sale_amount); totalCollected += collectedBySale[s.id]||0; });
+    var totalRemainingCollection = totalSold-totalCollected;
+
+    // Expense remaining summary (read-only)
+    var paidByEntry = {}; expPayments.forEach(function(p){ paidByEntry[p.entry_id]=(paidByEntry[p.entry_id]||0)+Number(p.amount); });
+    var expEntries = entries.filter(function(e){return e.kind==='expense';});
+    var totalExpense=0, totalPaid=0;
+    expEntries.forEach(function(e){ totalExpense+=Number(e.amount); totalPaid += paidByEntry[e.id]||0; });
+    var totalExpRemaining = totalExpense-totalPaid;
 
     return '<div class="page-head"><h2>حسابك</h2><p>البيانات محدّثة مباشرة من قاعدة البيانات المركزية.</p></div>'+
     (cache.meProjects.length>1 ? '<div class="select-projects">'+chips+'</div>' : '')+
@@ -622,7 +986,16 @@
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
-    '</div></div>';
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
+      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemainingCollection>0.001?'debit':'credit')+'">'+money(totalRemainingCollection)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
+    '</div>';
   }
 
   render();
