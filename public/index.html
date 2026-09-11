@@ -131,7 +131,7 @@
   var loginError = "";
   var adminTab = 'partners';
   var partnerActiveProject = null;
-  var cache = { partners:[], projects:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
+  var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{} };
   var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month' };
@@ -370,6 +370,7 @@
   // ================= ADMIN =================
   var adminNav = [
     {key:'partners', label:'الشركاء', icon:'👥'},
+    {key:'companies', label:'الشركات', icon:'🏢'},
     {key:'projects', label:'المشاريع', icon:'📁'},
     {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
     {key:'analytics', label:'تحليل الفترات', icon:'📈'},
@@ -411,6 +412,7 @@
   function renderAdminMain(){
     var main = document.getElementById('main-area');
     if(adminTab==='partners') main.innerHTML = pagePartners();
+    else if(adminTab==='companies') main.innerHTML = pageCompanies();
     else if(adminTab==='projects') main.innerHTML = pageProjects();
     else if(adminTab==='entries') main.innerHTML = pageEntries();
     else if(adminTab==='analytics') main.innerHTML = pageAnalytics();
@@ -436,9 +438,13 @@
     main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
     try{
       if(adminTab==='partners'){ cache.partners = await api('GET','/partners'); }
+      else if(adminTab==='companies'){
+        var coRes = await Promise.all([api('GET','/partners'), api('GET','/companies')]);
+        cache.partners = coRes[0]; cache.companies = coRes[1];
+      }
       else if(adminTab==='projects'){
-        var pr = await Promise.all([api('GET','/partners'), api('GET','/projects')]);
-        cache.partners = pr[0]; cache.projects = pr[1];
+        var pr = await Promise.all([api('GET','/partners'), api('GET','/projects'), api('GET','/companies')]);
+        cache.partners = pr[0]; cache.projects = pr[1]; cache.companies = pr[2];
       }
       else if(adminTab==='entries'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -525,6 +531,46 @@
     '</div></div>';
   }
 
+  function pageCompanies(){
+    var cards = cache.companies.map(function(co){
+      var shareRows = co.partners.map(function(sh){
+        return '<tr>'+
+          '<td>'+escapeHtml(sh.name)+'</td>'+
+          '<td><input type="number" class="edit-co-pct" data-company="'+co.id+'" data-partner="'+sh.partnerId+'" value="'+sh.percentage+'" min="0" max="100" step="0.01" style="width:90px;"></td>'+
+          '<td><button class="btn ghost sm" data-save-co-share="'+co.id+'" data-partner-save="'+sh.partnerId+'">حفظ</button></td>'+
+          '<td><button class="del-x" data-remove-co-share="'+co.id+'" data-partner-remove="'+sh.partnerId+'">✕</button></td>'+
+        '</tr>';
+      }).join('') || '<tr><td colspan="4" class="empty">لا يوجد شركاء في هذه الشركة بعد</td></tr>';
+
+      var pctTotal = co.partners.reduce(function(s,p){return s+p.percentage;},0);
+      var currentPartnerIds = co.partners.map(function(s){return s.partnerId;});
+      var addableOptions = cache.partners.filter(function(p){return currentPartnerIds.indexOf(p.id)===-1;})
+        .map(function(p){return '<option value="'+p.id+'">'+escapeHtml(p.name)+'</option>';}).join('');
+
+      return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(co.name)+'</h3>'+
+        '<button class="btn danger sm" data-del-company="'+co.id+'">حذف الشركة</button></div>'+
+        '<div class="panel-body">'+
+          '<table><thead><tr><th>الشريك</th><th>النسبة % في الشركة</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+          '<div class="pct-total '+(Math.abs(pctTotal-100)<0.001?'ok':'bad')+'" style="margin-top:10px;">إجمالي النسب: '+pctTotal+'%</div>'+
+          (addableOptions ? (
+            '<div class="form-row" style="margin-top:16px;">'+
+              '<div class="field"><label>إضافة شريك لهذه الشركة</label><select class="add-co-share-partner" data-company="'+co.id+'">'+addableOptions+'</select></div>'+
+              '<div class="field"><label>النسبة %</label><input type="number" class="add-co-share-pct" data-company="'+co.id+'" min="0" max="100" step="0.01" value="0"></div>'+
+            '</div><button class="btn sm" data-add-co-share="'+co.id+'">إضافة الشريك للشركة</button>'
+          ) : '')+
+        '</div></div>';
+    }).join('');
+
+    return '<div class="page-head"><h2>الشركات</h2><p>نسبة مشاركة كل شريك على مستوى الشركة ككل، منفصلة عن نسبته في كل مشروع على حدة.</p></div>'+
+    (cards || '<div class="panel"><div class="empty">لا توجد شركات بعد</div></div>')+
+    '<div class="panel"><div class="panel-head"><h3>إضافة شركة جديدة</h3></div><div class="panel-body">'+
+      '<form id="add-company-form">'+
+        '<div class="field" style="max-width:320px;"><label>اسم الشركة</label><input type="text" id="nco-name" required></div>'+
+        '<button class="btn" type="submit" style="margin-top:10px;">إضافة الشركة</button>'+
+      '</form>'+
+    '</div></div>';
+  }
+
   function pageProjects(){
     var cards = cache.projects.map(function(pr){
       var totals = null; // not fetched here; percentages/opening balances only
@@ -542,9 +588,19 @@
       var addableOptions = cache.partners.filter(function(p){return currentPartnerIds.indexOf(p.id)===-1;})
         .map(function(p){return '<option value="'+p.id+'">'+escapeHtml(p.name)+'</option>';}).join('');
 
-      return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(pr.name)+'</h3>'+
+      var companyOptions = '<option value="">بدون شركة محددة</option>'+cache.companies.map(function(c){
+        return '<option value="'+c.id+'"'+(c.id===pr.companyId?' selected':'')+'>'+escapeHtml(c.name)+'</option>';
+      }).join('');
+
+      return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(pr.name)+
+        (pr.companyName ? ' <span style="font-weight:400;font-size:13px;color:var(--ink-soft);">— شركة '+escapeHtml(pr.companyName)+'</span>' : '')+
+        '</h3>'+
         '<button class="btn danger sm" data-del-project="'+pr.id+'">حذف المشروع</button></div>'+
         '<div class="panel-body">'+
+          '<div class="form-row" style="margin-bottom:16px;align-items:end;">'+
+            '<div class="field"><label>الشركة التابع لها المشروع</label><select class="proj-company-select" data-project="'+pr.id+'">'+companyOptions+'</select></div>'+
+            '<div><button class="btn ghost sm" data-save-proj-company="'+pr.id+'">حفظ الشركة</button></div>'+
+          '</div>'+
           '<table><thead><tr><th>الشريك</th><th>النسبة %</th><th>الرصيد الافتتاحي</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
           (addableOptions ? (
             '<div class="form-row three" style="margin-top:16px;">'+
@@ -569,8 +625,13 @@
     (cards || '<div class="panel"><div class="empty">لا توجد مشاريع بعد</div></div>')+
     '<div class="panel"><div class="panel-head"><h3>إنشاء مشروع جديد</h3></div><div class="panel-body">'+
       '<form id="add-project-form">'+
-        '<div class="field"><label>اسم المشروع</label><input type="text" id="npj-name" required></div>'+
-        '<label style="margin-top:6px;">الشركاء ونسبة كل منهم</label>'+
+        '<div class="form-row">'+
+          '<div class="field"><label>اسم المشروع</label><input type="text" id="npj-name" required></div>'+
+          '<div class="field"><label>الشركة التابع لها (اختياري)</label><select id="npj-company"><option value="">بدون شركة محددة</option>'+
+            cache.companies.map(function(c){return '<option value="'+c.id+'">'+escapeHtml(c.name)+'</option>';}).join('')+
+          '</select></div>'+
+        '</div>'+
+        '<label style="margin-top:6px;">الشركاء ونسبة كل منهم في هذا المشروع</label>'+
         '<div id="np-partner-list">'+partnerRows+'</div>'+
         '<div id="pct-total-box" class="pct-total ok">إجمالي النسب: 0%</div>'+
         '<button class="btn" type="submit" style="margin-top:14px;">إنشاء المشروع</button>'+
@@ -917,6 +978,57 @@
       });
     });
 
+    var acof = document.getElementById('add-company-form');
+    if(acof) acof.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var name = document.getElementById('nco-name').value.trim();
+      try{ await api('POST','/companies',{name:name}); invalidateAndReload(); }
+      catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-del-company]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        if(!confirm('حذف الشركة؟ المشاريع التابعة لها هتفضل موجودة بس من غير شركة محددة.')) return;
+        try{ await api('DELETE','/companies/'+btn.getAttribute('data-del-company')); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-save-co-share]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var cid = btn.getAttribute('data-save-co-share');
+        var partnerId = btn.getAttribute('data-partner-save');
+        var pctInput = document.querySelector('.edit-co-pct[data-company="'+cid+'"][data-partner="'+partnerId+'"]');
+        try{ await api('PUT','/companies/'+cid+'/partners/'+partnerId,{percentage:parseFloat(pctInput.value)}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-remove-co-share]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        if(!confirm('إزالة هذا الشريك من الشركة؟')) return;
+        var cid = btn.getAttribute('data-remove-co-share');
+        var partnerId = btn.getAttribute('data-partner-remove');
+        try{ await api('DELETE','/companies/'+cid+'/partners/'+partnerId); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-add-co-share]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var cid = btn.getAttribute('data-add-co-share');
+        var sel = document.querySelector('.add-co-share-partner[data-company="'+cid+'"]');
+        var pct = document.querySelector('.add-co-share-pct[data-company="'+cid+'"]');
+        try{ await api('POST','/companies/'+cid+'/partners',{partnerId:Number(sel.value), percentage:parseFloat(pct.value)||0}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-save-proj-company]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var pid = btn.getAttribute('data-save-proj-company');
+        var sel = document.querySelector('.proj-company-select[data-project="'+pid+'"]');
+        var companyId = sel.value ? Number(sel.value) : null;
+        try{ await api('PUT','/projects/'+pid,{companyId:companyId}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+
     document.querySelectorAll('[data-save-share]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         var pid = btn.getAttribute('data-save-share');
@@ -983,7 +1095,9 @@
       });
       if(shares.length===0){ alert('اختر شريكًا واحدًا على الأقل.'); return; }
       if(Math.abs(total-100)>0.01 && !confirm('إجمالي النسب '+total+'% وليس 100%. متابعة؟')) return;
-      try{ await api('POST','/projects',{name:name,shares:shares}); invalidateAndReload(); }
+      var companySel = document.getElementById('npj-company');
+      var companyId = companySel && companySel.value ? Number(companySel.value) : null;
+      try{ await api('POST','/projects',{name:name,shares:shares,companyId:companyId}); invalidateAndReload(); }
       catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-project]').forEach(function(btn){

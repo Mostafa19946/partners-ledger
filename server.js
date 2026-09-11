@@ -39,10 +39,22 @@ async function initDb() {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS companies (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS company_partners (
+      id SERIAL PRIMARY KEY,
+      company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      partner_id INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+      percentage NUMERIC NOT NULL,
+      UNIQUE(company_id, partner_id)
+    );
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL
     );
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);
     CREATE TABLE IF NOT EXISTS project_partners (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -246,16 +258,80 @@ app.delete('/api/partners/:id', auth, requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Admin: companies (each project belongs to a company; partners have a
+// percentage share at the company level, separate from their per-project share)
+// ---------------------------------------------------------------------------
+app.get('/api/companies', auth, requireAdmin, async (req, res) => {
+  const companies = (await pool.query('SELECT id, name FROM companies ORDER BY id')).rows;
+  const shares = (await pool.query(`
+    SELECT cp.company_id, cp.partner_id, cp.percentage, p.name AS partner_name
+    FROM company_partners cp JOIN partners p ON p.id = cp.partner_id
+  `)).rows;
+  const withShares = companies.map(c => ({
+    ...c,
+    partners: shares.filter(s => s.company_id === c.id)
+      .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), name: s.partner_name }))
+  }));
+  res.json(withShares);
+});
+
+app.post('/api/companies', auth, requireAdmin, async (req, res) => {
+  const { name } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'اسم الشركة مطلوب' });
+  const { rows } = await pool.query('INSERT INTO companies (name) VALUES ($1) RETURNING *', [name]);
+  res.json(rows[0]);
+});
+
+app.delete('/api/companies/:id', auth, requireAdmin, async (req, res) => {
+  await pool.query('UPDATE projects SET company_id=NULL WHERE company_id=$1', [req.params.id]);
+  await pool.query('DELETE FROM companies WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.post('/api/companies/:id/partners', auth, requireAdmin, async (req, res) => {
+  const { partnerId, percentage } = req.body || {};
+  if (!partnerId || percentage === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO company_partners (company_id, partner_id, percentage) VALUES ($1,$2,$3) RETURNING *',
+      [req.params.id, partnerId, percentage]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    res.status(409).json({ error: 'هذا الشريك مضاف بالفعل لهذه الشركة' });
+  }
+});
+
+app.put('/api/companies/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
+  const { percentage } = req.body || {};
+  const { rows } = await pool.query(
+    'UPDATE company_partners SET percentage=$1 WHERE company_id=$2 AND partner_id=$3 RETURNING *',
+    [percentage, req.params.id, req.params.partnerId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
+});
+
+app.delete('/api/companies/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM company_partners WHERE company_id=$1 AND partner_id=$2', [req.params.id, req.params.partnerId]);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
 // Admin: projects
 // ---------------------------------------------------------------------------
 app.get('/api/projects', auth, requireAdmin, async (req, res) => {
-  const projects = (await pool.query('SELECT id, name FROM projects ORDER BY id')).rows;
+  const projects = (await pool.query(`
+    SELECT pr.id, pr.name, pr.company_id, c.name AS company_name
+    FROM projects pr LEFT JOIN companies c ON c.id = pr.company_id
+    ORDER BY pr.id
+  `)).rows;
   const shares = (await pool.query(`
     SELECT pp.project_id, pp.partner_id, pp.percentage, pp.opening_balance, p.name AS partner_name
     FROM project_partners pp JOIN partners p ON p.id = pp.partner_id
   `)).rows;
   const withShares = projects.map(pr => ({
-    ...pr,
+    id: pr.id, name: pr.name, companyId: pr.company_id, companyName: pr.company_name,
     partners: shares.filter(s => s.project_id === pr.id)
       .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), openingBalance: Number(s.opening_balance), name: s.partner_name }))
   }));
@@ -263,14 +339,14 @@ app.get('/api/projects', auth, requireAdmin, async (req, res) => {
 });
 
 app.post('/api/projects', auth, requireAdmin, async (req, res) => {
-  const { name, shares } = req.body || {};
+  const { name, shares, companyId } = req.body || {};
   if (!name || !Array.isArray(shares) || shares.length === 0) {
     return res.status(400).json({ error: 'اسم المشروع والشركاء مطلوبون' });
   }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const projRes = await client.query('INSERT INTO projects (name) VALUES ($1) RETURNING id', [name]);
+    const projRes = await client.query('INSERT INTO projects (name, company_id) VALUES ($1,$2) RETURNING id', [name, companyId || null]);
     const projectId = projRes.rows[0].id;
     for (const s of shares) {
       await client.query(
@@ -286,6 +362,13 @@ app.post('/api/projects', auth, requireAdmin, async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+app.put('/api/projects/:id', auth, requireAdmin, async (req, res) => {
+  const { companyId } = req.body || {};
+  const { rows } = await pool.query('UPDATE projects SET company_id=$1 WHERE id=$2 RETURNING *', [companyId || null, req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
 });
 
 app.delete('/api/projects/:id', auth, requireAdmin, async (req, res) => {
