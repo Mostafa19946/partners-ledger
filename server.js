@@ -50,6 +50,7 @@ async function initDb() {
       percentage NUMERIC NOT NULL,
       UNIQUE(project_id, partner_id)
     );
+    ALTER TABLE project_partners ADD COLUMN IF NOT EXISTS opening_balance NUMERIC NOT NULL DEFAULT 0;
     CREATE TABLE IF NOT EXISTS entries (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -250,13 +251,13 @@ app.delete('/api/partners/:id', auth, requireAdmin, async (req, res) => {
 app.get('/api/projects', auth, requireAdmin, async (req, res) => {
   const projects = (await pool.query('SELECT id, name FROM projects ORDER BY id')).rows;
   const shares = (await pool.query(`
-    SELECT pp.project_id, pp.partner_id, pp.percentage, p.name AS partner_name
+    SELECT pp.project_id, pp.partner_id, pp.percentage, pp.opening_balance, p.name AS partner_name
     FROM project_partners pp JOIN partners p ON p.id = pp.partner_id
   `)).rows;
   const withShares = projects.map(pr => ({
     ...pr,
     partners: shares.filter(s => s.project_id === pr.id)
-      .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), name: s.partner_name }))
+      .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), openingBalance: Number(s.opening_balance), name: s.partner_name }))
   }));
   res.json(withShares);
 });
@@ -289,6 +290,41 @@ app.post('/api/projects', auth, requireAdmin, async (req, res) => {
 
 app.delete('/api/projects/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM projects WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// Add a partner to an existing project
+app.post('/api/projects/:id/partners', auth, requireAdmin, async (req, res) => {
+  const { partnerId, percentage, openingBalance } = req.body || {};
+  if (!partnerId || percentage === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO project_partners (project_id, partner_id, percentage, opening_balance) VALUES ($1,$2,$3,$4) RETURNING *',
+      [req.params.id, partnerId, percentage, openingBalance || 0]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    res.status(409).json({ error: 'هذا الشريك مضاف بالفعل لهذا المشروع' });
+  }
+});
+
+// Update a partner's percentage and/or opening balance within a project
+app.put('/api/projects/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
+  const { percentage, openingBalance } = req.body || {};
+  const { rows } = await pool.query(
+    `UPDATE project_partners SET
+       percentage = COALESCE($1, percentage),
+       opening_balance = COALESCE($2, opening_balance)
+     WHERE project_id=$3 AND partner_id=$4 RETURNING *`,
+    [percentage === undefined ? null : percentage, openingBalance === undefined ? null : openingBalance, req.params.id, req.params.partnerId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
+});
+
+// Remove a partner from a project (does not delete the partner themselves)
+app.delete('/api/projects/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM project_partners WHERE project_id=$1 AND partner_id=$2', [req.params.id, req.params.partnerId]);
   res.json({ ok: true });
 });
 
@@ -520,7 +556,7 @@ app.get('/api/report/:projectId', auth, async (req, res) => {
   const net = revenue - expense;
 
   const sharesRes = await pool.query(`
-    SELECT pp.partner_id, pp.percentage, p.name
+    SELECT pp.partner_id, pp.percentage, pp.opening_balance, p.name
     FROM project_partners pp JOIN partners p ON p.id = pp.partner_id
     WHERE pp.project_id = $1
   `, [projectId]);
@@ -538,11 +574,92 @@ app.get('/api/report/:projectId', auth, async (req, res) => {
     partnerId: s.partner_id,
     name: s.name,
     percentage: Number(s.percentage),
+    openingBalance: Number(s.opening_balance),
     shareOfNet: net * (Number(s.percentage) / 100),
-    currentAccountBalance: balanceMap[s.partner_id] || 0
+    currentAccountBalance: (balanceMap[s.partner_id] || 0) + Number(s.opening_balance)
   }));
 
   res.json({ projectId: Number(projectId), revenue, expense, net, partners });
+});
+
+// ---------------------------------------------------------------------------
+// Bulk import from Excel (parsed client-side, sent here as JSON rows)
+// ---------------------------------------------------------------------------
+app.post('/api/entries/bulk', auth, requireAdmin, async (req, res) => {
+  const { projectId, kind, rows } = req.body || {};
+  if (!projectId || !['revenue', 'expense'].includes(kind) || !Array.isArray(rows) || !rows.length) {
+    return res.status(400).json({ error: 'بيانات ناقصة' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let inserted = 0;
+    for (const r of rows) {
+      if (!r.amount || !r.date) continue;
+      await client.query(
+        'INSERT INTO entries (project_id, kind, amount, description, entry_date, category) VALUES ($1,$2,$3,$4,$5,$6)',
+        [projectId, kind, r.amount, r.description || null, r.date, kind === 'expense' ? (r.category || 'أخرى') : null]
+      );
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'فشل الاستيراد' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
+  const { projectId, rows } = req.body || {};
+  if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let inserted = 0;
+    for (const r of rows) {
+      if (!r.name || r.quantityIn === undefined || r.quantityIn === null) continue;
+      await client.query(
+        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price) VALUES ($1,$2,$3,$4,$5)',
+        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0]
+      );
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'فشل الاستيراد' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/current-account/bulk', auth, requireAdmin, async (req, res) => {
+  const { projectId, rows } = req.body || {}; // rows: [{partnerId, kind, amount, date, description}]
+  if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let inserted = 0;
+    for (const r of rows) {
+      if (!r.partnerId || !r.amount || !r.date || !['deposit', 'withdrawal', 'distribution'].includes(r.kind)) continue;
+      await client.query(
+        'INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5,$6)',
+        [projectId, r.partnerId, r.kind, r.amount, r.description || null, r.date]
+      );
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'فشل الاستيراد' });
+  } finally {
+    client.release();
+  }
 });
 
 // ---------------------------------------------------------------------------
