@@ -263,11 +263,12 @@
       '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
       '<div class="who">مسجل الدخول باسم<b>'+escapeHtml(currentUser.name)+'</b></div>'+
       '<div class="nav-row">'+nav+'</div>'+
-      '<div class="sidebar-foot"><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
+      '<div class="sidebar-foot"><button class="logout-link" id="refresh-btn" style="color:#cdd6cd;margin-bottom:8px;">↻ تحديث البيانات</button><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
     '</div><div class="main" id="main-area"><div class="empty">جارِ التحميل…</div></div></div>';
   }
   function bindAdminShell(){
     document.getElementById('logout-btn').addEventListener('click', logout);
+    document.getElementById('refresh-btn').addEventListener('click', function(){ invalidateAndReload(); });
     document.querySelectorAll('[data-nav]').forEach(function(el){
       el.addEventListener('click', function(){
         if(adminTab === el.getAttribute('data-nav')) return;
@@ -280,15 +281,40 @@
     });
     loadAdminPage();
   }
-  async function loadAdminPage(){
+
+  // Renders the current admin tab purely from whatever is already in `cache` — no network calls.
+  // Used both after a successful fetch and for instant optimistic UI updates after add/delete.
+  function renderAdminMain(){
     var main = document.getElementById('main-area');
+    if(adminTab==='partners') main.innerHTML = pagePartners();
+    else if(adminTab==='projects') main.innerHTML = pageProjects();
+    else if(adminTab==='entries') main.innerHTML = pageEntries();
+    else if(adminTab==='analytics') main.innerHTML = pageAnalytics();
+    else if(adminTab==='inventory') main.innerHTML = pageInventory();
+    else if(adminTab==='current') main.innerHTML = pageCurrentAccount();
+    else if(adminTab==='report') main.innerHTML = pageReport();
+    else if(adminTab==='settings') main.innerHTML = pageSettings();
+    bindAdminPageEvents();
+  }
+
+  // Fetches whatever the current tab needs, but skips the network round-trip entirely
+  // if that tab+project was already loaded (loadedTabs cache) — makes revisiting a tab instant.
+  // Pass force=true (e.g. after switching the project dropdown, or a manual refresh) to refetch.
+  var loadedTabs = {};
+  async function loadAdminPage(force){
+    var main = document.getElementById('main-area');
+    var tabKey = adminTab;
+    if(['entries','analytics','inventory','current','report'].indexOf(adminTab)>=0){
+      var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', current:'caProjectId', report:'reportProjectId'};
+      tabKey = adminTab + ':' + (uiState[pidMap[adminTab]] || (cache.projects[0] && cache.projects[0].id) || '');
+    }
+    if(!force && loadedTabs[tabKey]){ renderAdminMain(); return; }
     main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
     try{
-      if(adminTab==='partners'){ cache.partners = await api('GET','/partners'); main.innerHTML = pagePartners(); }
+      if(adminTab==='partners'){ cache.partners = await api('GET','/partners'); }
       else if(adminTab==='projects'){
         var pr = await Promise.all([api('GET','/partners'), api('GET','/projects')]);
         cache.partners = pr[0]; cache.projects = pr[1];
-        main.innerHTML = pageProjects();
       }
       else if(adminTab==='entries'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -302,7 +328,6 @@
           cache.entries[epid] = enRes[0];
           cache.expensePayments[epid] = enRes[1];
         }
-        main.innerHTML = pageEntries();
       }
       else if(adminTab==='analytics'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -310,7 +335,6 @@
           if(!uiState.analyticsProjectId) uiState.analyticsProjectId = cache.projects[0].id;
           cache.entries[uiState.analyticsProjectId] = await api('GET','/entries?projectId='+uiState.analyticsProjectId);
         }
-        main.innerHTML = pageAnalytics();
       }
       else if(adminTab==='inventory'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -330,7 +354,6 @@
           cache.entries[pid] = invRes[3];
           cache.expensePayments[pid] = invRes[4];
         }
-        main.innerHTML = pageInventory();
       }
       else if(adminTab==='current'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -338,7 +361,6 @@
           if(!uiState.caProjectId) uiState.caProjectId = cache.projects[0].id;
           cache.currentAccount[uiState.caProjectId] = await api('GET','/current-account?projectId='+uiState.caProjectId);
         }
-        main.innerHTML = pageCurrentAccount();
       }
       else if(adminTab==='report'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -346,14 +368,16 @@
           if(!uiState.reportProjectId) uiState.reportProjectId = cache.projects[0].id;
           cache.report[uiState.reportProjectId] = await api('GET','/report/'+uiState.reportProjectId);
         }
-        main.innerHTML = pageReport();
       }
-      else if(adminTab==='settings'){ main.innerHTML = pageSettings(); }
-      bindAdminPageEvents();
+      loadedTabs[tabKey] = true;
+      renderAdminMain();
     }catch(e){
       main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
     }
   }
+  // Call after any add/delete mutation: clears this tab's cache flag and forces one fresh fetch,
+  // so numbers stay correct (server computes totals/shares) while other tabs stay cached and instant.
+  function invalidateAndReload(){ loadedTabs = {}; loadAdminPage(true); }
 
   function pagePartners(){
     var rows = cache.partners.map(function(p){
@@ -721,7 +745,7 @@
       var name = document.getElementById('np-name').value.trim();
       var username = document.getElementById('np-user').value.trim();
       var password = document.getElementById('np-pass').value;
-      try{ await api('POST','/partners',{name:name,username:username,password:password}); loadAdminPage(); }
+      try{ await api('POST','/partners',{name:name,username:username,password:password}); invalidateAndReload(); }
       catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-reset-pw]').forEach(function(btn){
@@ -729,14 +753,14 @@
         var pid = btn.getAttribute('data-reset-pw');
         var val = document.getElementById('pw-'+pid).value;
         if(!val || val.length<4){ alert('اكتب كلمة مرور من 4 حروف على الأقل'); return; }
-        try{ await api('PUT','/partners/'+pid+'/password',{password:val}); alert('تم تغيير كلمة المرور.'); loadAdminPage(); }
+        try{ await api('PUT','/partners/'+pid+'/password',{password:val}); alert('تم تغيير كلمة المرور.'); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
     document.querySelectorAll('[data-del-partner]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         if(!confirm('حذف هذا الشريك سيزيل بياناته من المشاريع والحساب الجاري. متابعة؟')) return;
-        try{ await api('DELETE','/partners/'+btn.getAttribute('data-del-partner')); loadAdminPage(); }
+        try{ await api('DELETE','/partners/'+btn.getAttribute('data-del-partner')); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
@@ -773,13 +797,13 @@
       });
       if(shares.length===0){ alert('اختر شريكًا واحدًا على الأقل.'); return; }
       if(Math.abs(total-100)>0.01 && !confirm('إجمالي النسب '+total+'% وليس 100%. متابعة؟')) return;
-      try{ await api('POST','/projects',{name:name,shares:shares}); loadAdminPage(); }
+      try{ await api('POST','/projects',{name:name,shares:shares}); invalidateAndReload(); }
       catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-project]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         if(!confirm('سيتم حذف المشروع وكل حركاته المالية. متابعة؟')) return;
-        try{ await api('DELETE','/projects/'+btn.getAttribute('data-del-project')); loadAdminPage(); }
+        try{ await api('DELETE','/projects/'+btn.getAttribute('data-del-project')); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
@@ -798,11 +822,11 @@
         amount: parseFloat(document.getElementById('ne-amount').value), date: document.getElementById('ne-date').value,
         description: document.getElementById('ne-desc').value.trim() };
       if(kind==='expense'){ body.category = document.getElementById('ne-category').value; }
-      try{ await api('POST','/entries',body); loadAdminPage(); } catch(e){ alert(e.message); }
+      try{ await api('POST','/entries',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-entry]').forEach(function(btn){
       btn.addEventListener('click', async function(){
-        try{ await api('DELETE','/entries/'+btn.getAttribute('data-del-entry')); loadAdminPage(); } catch(e){ alert(e.message); }
+        try{ await api('DELETE','/entries/'+btn.getAttribute('data-del-entry')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
     document.querySelectorAll('[data-pay-entry]').forEach(function(btn){
@@ -815,7 +839,7 @@
         if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
         var dateStr = prompt('تاريخ السداد (YYYY-MM-DD)', todayStr());
         if(dateStr===null) return;
-        try{ await api('POST','/expense-payments',{entryId:Number(entryId), amount:amount, date:dateStr}); loadAdminPage(); }
+        try{ await api('POST','/expense-payments',{entryId:Number(entryId), amount:amount, date:dateStr}); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
@@ -828,11 +852,11 @@
       var body = { projectId: uiState.caProjectId, partnerId: Number(document.getElementById('nca-partner').value),
         kind: document.getElementById('nca-kind').value, amount: parseFloat(document.getElementById('nca-amount').value),
         date: document.getElementById('nca-date').value, description: document.getElementById('nca-desc').value.trim() };
-      try{ await api('POST','/current-account',body); loadAdminPage(); } catch(e){ alert(e.message); }
+      try{ await api('POST','/current-account',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-ca]').forEach(function(btn){
       btn.addEventListener('click', async function(){
-        try{ await api('DELETE','/current-account/'+btn.getAttribute('data-del-ca')); loadAdminPage(); } catch(e){ alert(e.message); }
+        try{ await api('DELETE','/current-account/'+btn.getAttribute('data-del-ca')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
 
@@ -853,12 +877,12 @@
       var body = { projectId: uiState.invProjectId, name: document.getElementById('ni-name').value.trim(),
         unit: document.getElementById('ni-unit').value.trim(), quantityIn: parseFloat(document.getElementById('ni-qty').value),
         unitPrice: parseFloat(document.getElementById('ni-price').value)||0 };
-      try{ await api('POST','/inventory/items',body); loadAdminPage(); } catch(e){ alert(e.message); }
+      try{ await api('POST','/inventory/items',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-item]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         if(!confirm('حذف هذا الصنف سيحذف كل عمليات بيعه المسجلة. متابعة؟')) return;
-        try{ await api('DELETE','/inventory/items/'+btn.getAttribute('data-del-item')); loadAdminPage(); } catch(e){ alert(e.message); }
+        try{ await api('DELETE','/inventory/items/'+btn.getAttribute('data-del-item')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
     var asf = document.getElementById('add-sale-form');
@@ -867,11 +891,11 @@
       var body = { projectId: uiState.invProjectId, itemId: Number(document.getElementById('ns-item').value),
         quantity: parseFloat(document.getElementById('ns-qty').value), saleAmount: parseFloat(document.getElementById('ns-amount').value),
         saleDate: document.getElementById('ns-date').value, description: document.getElementById('ns-desc').value.trim() };
-      try{ await api('POST','/inventory/sales',body); loadAdminPage(); } catch(e){ alert(e.message); }
+      try{ await api('POST','/inventory/sales',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-sale]').forEach(function(btn){
       btn.addEventListener('click', async function(){
-        try{ await api('DELETE','/inventory/sales/'+btn.getAttribute('data-del-sale')); loadAdminPage(); } catch(e){ alert(e.message); }
+        try{ await api('DELETE','/inventory/sales/'+btn.getAttribute('data-del-sale')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
     document.querySelectorAll('[data-collect-sale]').forEach(function(btn){
@@ -884,7 +908,7 @@
         if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
         var dateStr = prompt('تاريخ التحصيل (YYYY-MM-DD)', todayStr());
         if(dateStr===null) return;
-        try{ await api('POST','/inventory/collections',{saleId:Number(saleId), amount:amount, date:dateStr}); loadAdminPage(); }
+        try{ await api('POST','/inventory/collections',{saleId:Number(saleId), amount:amount, date:dateStr}); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
