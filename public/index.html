@@ -269,26 +269,38 @@
   function bindAdminShell(){
     document.getElementById('logout-btn').addEventListener('click', logout);
     document.querySelectorAll('[data-nav]').forEach(function(el){
-      el.addEventListener('click', function(){ adminTab = el.getAttribute('data-nav'); loadAdminPage(); });
+      el.addEventListener('click', function(){
+        if(adminTab === el.getAttribute('data-nav')) return;
+        adminTab = el.getAttribute('data-nav');
+        document.querySelectorAll('[data-nav]').forEach(function(n){
+          n.classList.toggle('active', n.getAttribute('data-nav')===adminTab);
+        });
+        loadAdminPage();
+      });
     });
     loadAdminPage();
   }
   async function loadAdminPage(){
-    render(); // repaint shell to reflect active tab, shows loading
     var main = document.getElementById('main-area');
+    main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
     try{
       if(adminTab==='partners'){ cache.partners = await api('GET','/partners'); main.innerHTML = pagePartners(); }
       else if(adminTab==='projects'){
-        cache.partners = await api('GET','/partners');
-        cache.projects = await api('GET','/projects');
+        var pr = await Promise.all([api('GET','/partners'), api('GET','/projects')]);
+        cache.partners = pr[0]; cache.projects = pr[1];
         main.innerHTML = pageProjects();
       }
       else if(adminTab==='entries'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
         if(cache.projects.length){
           if(!uiState.entriesProjectId) uiState.entriesProjectId = cache.projects[0].id;
-          cache.entries[uiState.entriesProjectId] = await api('GET','/entries?projectId='+uiState.entriesProjectId);
-          cache.expensePayments[uiState.entriesProjectId] = await api('GET','/expense-payments?projectId='+uiState.entriesProjectId);
+          var epid = uiState.entriesProjectId;
+          var enRes = await Promise.all([
+            api('GET','/entries?projectId='+epid),
+            api('GET','/expense-payments?projectId='+epid)
+          ]);
+          cache.entries[epid] = enRes[0];
+          cache.expensePayments[epid] = enRes[1];
         }
         main.innerHTML = pageEntries();
       }
@@ -305,11 +317,18 @@
         if(cache.projects.length){
           if(!uiState.invProjectId) uiState.invProjectId = cache.projects[0].id;
           var pid = uiState.invProjectId;
-          cache.inventoryItems[pid] = await api('GET','/inventory/items?projectId='+pid);
-          cache.inventorySales[pid] = await api('GET','/inventory/sales?projectId='+pid);
-          cache.inventoryCollections[pid] = await api('GET','/inventory/collections?projectId='+pid);
-          cache.entries[pid] = cache.entries[pid] || await api('GET','/entries?projectId='+pid);
-          cache.expensePayments[pid] = await api('GET','/expense-payments?projectId='+pid);
+          var invRes = await Promise.all([
+            api('GET','/inventory/items?projectId='+pid),
+            api('GET','/inventory/sales?projectId='+pid),
+            api('GET','/inventory/collections?projectId='+pid),
+            api('GET','/entries?projectId='+pid),
+            api('GET','/expense-payments?projectId='+pid)
+          ]);
+          cache.inventoryItems[pid] = invRes[0];
+          cache.inventorySales[pid] = invRes[1];
+          cache.inventoryCollections[pid] = invRes[2];
+          cache.entries[pid] = invRes[3];
+          cache.expensePayments[pid] = invRes[4];
         }
         main.innerHTML = pageInventory();
       }
@@ -913,13 +932,17 @@
         main.innerHTML = '<div class="page-head"><h2>حسابك</h2></div><div class="panel"><div class="empty">لم يتم ربطك بأي مشروع بعد. تواصل مع المدير المسؤول عن إدخال البيانات.</div></div>';
         return;
       }
-      var rep = await api('GET','/report/'+partnerActiveProject);
-      var caEntries = await api('GET','/current-account?projectId='+partnerActiveProject);
-      var entries = await api('GET','/entries?projectId='+partnerActiveProject);
-      var expPayments = await api('GET','/expense-payments?projectId='+partnerActiveProject);
-      var invItems = await api('GET','/inventory/items?projectId='+partnerActiveProject);
-      var invSales = await api('GET','/inventory/sales?projectId='+partnerActiveProject);
-      var invCollections = await api('GET','/inventory/collections?projectId='+partnerActiveProject);
+      var results = await Promise.all([
+        api('GET','/report/'+partnerActiveProject),
+        api('GET','/current-account?projectId='+partnerActiveProject),
+        api('GET','/entries?projectId='+partnerActiveProject),
+        api('GET','/expense-payments?projectId='+partnerActiveProject),
+        api('GET','/inventory/items?projectId='+partnerActiveProject),
+        api('GET','/inventory/sales?projectId='+partnerActiveProject),
+        api('GET','/inventory/collections?projectId='+partnerActiveProject)
+      ]);
+      var rep = results[0], caEntries = results[1], entries = results[2], expPayments = results[3],
+        invItems = results[4], invSales = results[5], invCollections = results[6];
       main.innerHTML = renderPartnerDashboard(rep, caEntries, entries, expPayments, invItems, invSales, invCollections);
       document.querySelectorAll('[data-project]').forEach(function(chip){
         chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
