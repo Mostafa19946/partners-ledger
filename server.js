@@ -100,6 +100,7 @@ async function initDb() {
       unit_price NUMERIC NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS status TEXT;
     CREATE TABLE IF NOT EXISTS inventory_sales (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -501,11 +502,11 @@ app.get('/api/inventory/items', auth, async (req, res) => {
 });
 
 app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
-  const { projectId, name, unit, quantityIn, unitPrice } = req.body || {};
+  const { projectId, name, unit, quantityIn, unitPrice, status } = req.body || {};
   if (!projectId || !name || quantityIn === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
   const { rows } = await pool.query(
-    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-    [projectId, name, unit || null, quantityIn, unitPrice || 0]
+    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    [projectId, name, unit || null, quantityIn, unitPrice || 0, status || null]
   );
   res.json(rows[0]);
 });
@@ -705,8 +706,8 @@ app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
     for (const r of rows) {
       if (!r.name || r.quantityIn === undefined || r.quantityIn === null) continue;
       await client.query(
-        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price) VALUES ($1,$2,$3,$4,$5)',
-        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0]
+        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status) VALUES ($1,$2,$3,$4,$5,$6)',
+        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0, r.status || null]
       );
       inserted++;
     }

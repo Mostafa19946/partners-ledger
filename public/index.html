@@ -216,10 +216,25 @@
   function importPanelHtml(idPrefix, title, columnsDesc){
     return '<div class="panel"><div class="panel-head"><h3>'+title+'</h3></div><div class="panel-body">'+
       '<div class="muted-note">الأعمدة المطلوبة في الصف الأول من ملف الإكسيل (بنفس الأسماء بالظبط): <b>'+columnsDesc+'</b></div>'+
-      '<div class="field" style="max-width:320px;margin-top:10px;"><input type="file" id="'+idPrefix+'-file" accept=".xlsx,.xls,.csv"></div>'+
+      '<button class="btn ghost sm" id="'+idPrefix+'-template" type="button" style="margin-top:8px;">⬇ تحميل نموذج إكسيل فارغ</button>'+
+      '<div class="field" style="max-width:320px;margin-top:14px;"><input type="file" id="'+idPrefix+'-file" accept=".xlsx,.xls,.csv"></div>'+
       '<div id="'+idPrefix+'-status"></div>'+
       '<button class="btn brass" id="'+idPrefix+'-confirm" style="display:none;margin-top:10px;">تأكيد الاستيراد</button>'+
     '</div></div>';
+  }
+  function downloadExcelTemplate(filename, sheetName, headers, exampleRow){
+    if(typeof XLSX === 'undefined'){ alert('مكتبة الإكسيل لم تُحمّل، حدّث الصفحة وحاول تاني'); return; }
+    var aoa = [headers, exampleRow];
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = headers.map(function(){ return {wch:20}; });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    XLSX.writeFile(wb, filename);
+  }
+  function bindTemplateButton(idPrefix, filename, sheetName, headers, exampleRow){
+    var btn = document.getElementById(idPrefix+'-template');
+    if(!btn) return;
+    btn.addEventListener('click', function(){ downloadExcelTemplate(filename, sheetName, headers, exampleRow); });
   }
   function bindImportPanel(idPrefix, mapRow, requiredCols, onConfirm){
     var fileInput = document.getElementById(idPrefix+'-file');
@@ -280,7 +295,8 @@
     var name = String(r['اسم الصنف']||'').trim();
     var qty = excelToNumber(r['الكمية']);
     if(!name || isNaN(qty)) return null;
-    return {name:name, unit:String(r['الوحدة']||'').trim(), quantityIn:qty, unitPrice: excelToNumber(r['سعر الوحدة'])||0};
+    var status = r['الحالة']!==undefined ? String(r['الحالة']||'').trim() : '';
+    return {name:name, unit:String(r['الوحدة']||'').trim(), quantityIn:qty, unitPrice: excelToNumber(r['سعر الوحدة'])||0, status: status||null};
   }
   function mapCurrentAccountRowFactory(partnersList){
     var byName = {};
@@ -832,12 +848,14 @@
     var itemRows = items.map(function(it){
       var sold = soldByItem[it.id]||0;
       var remainingQty = Number(it.quantity_in) - sold;
+      var statusTag = it.status ? '<span class="tag cat">'+escapeHtml(it.status)+'</span>' : '—';
       return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
         '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td>'+
         '<td class="mono '+(remainingQty<0?'debit':'')+'">'+remainingQty+'</td>'+
+        '<td>'+statusTag+'</td>'+
         '<td class="amt">'+money(it.unit_price)+'</td>'+
         '<td><button class="del-x" data-del-item="'+it.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="7" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
 
     var itemOptions = items.map(function(it){return '<option value="'+it.id+'">'+escapeHtml(it.name)+' ('+(Number(it.quantity_in)-(soldByItem[it.id]||0))+' متبقي)</option>';}).join('');
 
@@ -892,7 +910,7 @@
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
 
     '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>سعر الوحدة</th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
+      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>إضافة صنف جديد للمخزون</h3></div><div class="panel-body">'+
       '<form id="add-item-form"><div class="form-row three">'+
@@ -935,7 +953,7 @@
     '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>'+
-    importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة');
+    importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة (وعمود اختياري: الحالة — مثل متاح / محجوز / مباع)');
   }
 
   function pageSettings(){
@@ -1239,6 +1257,15 @@
       }catch(e){ msg.innerHTML = '<div class="error-box">'+escapeHtml(e.message)+'</div>'; }
     });
 
+    bindTemplateButton('import-rev', 'نموذج_استيراد_الإيرادات.xlsx', 'الإيرادات',
+      ['التاريخ','البيان','المبلغ'], ['2026-01-15','دفعة من العميل أحمد',15000]);
+    bindTemplateButton('import-exp', 'نموذج_استيراد_المصروفات.xlsx', 'المصروفات',
+      ['التاريخ','البيان','المبلغ','التصنيف'], ['2026-01-15','إيجار المخزن شهر يناير',3000,'إيجار']);
+    bindTemplateButton('import-inv', 'نموذج_استيراد_المخزون.xlsx', 'المخزون',
+      ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح']);
+    bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
+      ['التاريخ','اسم الشريك','النوع','المبلغ','البيان'], ['2026-01-10','محمد أحمد','إيداع',5000,'إيداع نقدي في حساب المشروع']);
+
     bindImportPanel('import-rev', mapRevenueRow, ['التاريخ','البيان','المبلغ'], function(rowsToImport){
       return api('POST','/entries/bulk', {projectId: uiState.entriesProjectId, kind:'revenue', rows: rowsToImport});
     });
@@ -1332,9 +1359,10 @@
     var invRows = invItems.map(function(it){
       var sold = soldByItem[it.id]||0;
       var remainingQty = Number(it.quantity_in)-sold;
+      var statusTag = it.status ? '<span class="tag cat">'+escapeHtml(it.status)+'</span>' : '—';
       return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
-        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td><td class="mono">'+remainingQty+'</td></tr>';
-    }).join('') || '<tr><td colspan="5" class="empty">لا يوجد مخزون مسجل لهذا المشروع</td></tr>';
+        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td><td class="mono">'+remainingQty+'</td><td>'+statusTag+'</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">لا يوجد مخزون مسجل لهذا المشروع</td></tr>';
     var totalSold=0, totalCollected=0;
     invSales.forEach(function(s){ totalSold += Number(s.sale_amount); totalCollected += collectedBySale[s.id]||0; });
     var totalRemainingCollection = totalSold-totalCollected;
@@ -1364,7 +1392,7 @@
       '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
+      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
     '</div></div>'+
     '<div class="grid-stats">'+
       '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
