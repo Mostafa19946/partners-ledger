@@ -101,6 +101,8 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS status TEXT;
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS net_area NUMERIC;
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS garden_area NUMERIC;
     CREATE TABLE IF NOT EXISTS inventory_sales (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -111,6 +113,18 @@ async function initDb() {
       description TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS customer_name TEXT;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS building_no TEXT;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS garage_value NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS garage_collected NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS maintenance_value NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS maintenance_collected NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS utilities_value NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS utilities_collected NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS bank_collected NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS bank_held NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS collection_diff NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_sales ADD COLUMN IF NOT EXISTS down_payment_percent NUMERIC;
     CREATE TABLE IF NOT EXISTS sale_collections (
       id SERIAL PRIMARY KEY,
       sale_id INTEGER NOT NULL REFERENCES inventory_sales(id) ON DELETE CASCADE,
@@ -502,11 +516,11 @@ app.get('/api/inventory/items', auth, async (req, res) => {
 });
 
 app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
-  const { projectId, name, unit, quantityIn, unitPrice, status } = req.body || {};
+  const { projectId, name, unit, quantityIn, unitPrice, status, netArea, gardenArea } = req.body || {};
   if (!projectId || !name || quantityIn === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
   const { rows } = await pool.query(
-    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [projectId, name, unit || null, quantityIn, unitPrice || 0, status || null]
+    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+    [projectId, name, unit || null, quantityIn, unitPrice || 0, status || null, netArea || null, gardenArea || null]
   );
   res.json(rows[0]);
 });
@@ -521,7 +535,7 @@ app.get('/api/inventory/sales', auth, async (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
   if (!(await assertProjectAccess(req, res, projectId))) return;
   const { rows } = await pool.query(`
-    SELECT s.*, i.name AS item_name, i.unit AS item_unit
+    SELECT s.*, i.name AS item_name, i.unit AS item_unit, i.net_area AS item_net_area, i.garden_area AS item_garden_area
     FROM inventory_sales s JOIN inventory_items i ON i.id = s.item_id
     WHERE s.project_id=$1 ORDER BY s.sale_date DESC, s.created_at DESC
   `, [projectId]);
@@ -529,14 +543,58 @@ app.get('/api/inventory/sales', auth, async (req, res) => {
 });
 
 app.post('/api/inventory/sales', auth, requireAdmin, async (req, res) => {
-  const { projectId, itemId, quantity, saleAmount, saleDate, description } = req.body || {};
+  const {
+    projectId, itemId, quantity, saleAmount, saleDate, description,
+    customerName, buildingNo, garageValue, garageCollected,
+    maintenanceValue, maintenanceCollected, utilitiesValue, utilitiesCollected,
+    bankCollected, bankHeld, collectionDiff, downPaymentPercent
+  } = req.body || {};
   if (!projectId || !itemId || !quantity || !saleAmount || !saleDate) {
     return res.status(400).json({ error: 'بيانات ناقصة' });
   }
   const { rows } = await pool.query(
-    'INSERT INTO inventory_sales (project_id, item_id, quantity, sale_amount, sale_date, description) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [projectId, itemId, quantity, saleAmount, saleDate, description || null]
+    `INSERT INTO inventory_sales
+      (project_id, item_id, quantity, sale_amount, sale_date, description,
+       customer_name, building_no, garage_value, garage_collected,
+       maintenance_value, maintenance_collected, utilities_value, utilities_collected,
+       bank_collected, bank_held, collection_diff, down_payment_percent)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+    [projectId, itemId, quantity, saleAmount, saleDate, description || null,
+     customerName || null, buildingNo || null, garageValue || 0, garageCollected || 0,
+     maintenanceValue || 0, maintenanceCollected || 0, utilitiesValue || 0, utilitiesCollected || 0,
+     bankCollected || 0, bankHeld || 0, collectionDiff || 0, downPaymentPercent === undefined ? null : downPaymentPercent]
   );
+  res.json(rows[0]);
+});
+
+app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE inventory_sales SET
+       quantity = COALESCE($1, quantity),
+       sale_amount = COALESCE($2, sale_amount),
+       sale_date = COALESCE($3, sale_date),
+       description = COALESCE($4, description),
+       customer_name = COALESCE($5, customer_name),
+       building_no = COALESCE($6, building_no),
+       garage_value = COALESCE($7, garage_value),
+       garage_collected = COALESCE($8, garage_collected),
+       maintenance_value = COALESCE($9, maintenance_value),
+       maintenance_collected = COALESCE($10, maintenance_collected),
+       utilities_value = COALESCE($11, utilities_value),
+       utilities_collected = COALESCE($12, utilities_collected),
+       bank_collected = COALESCE($13, bank_collected),
+       bank_held = COALESCE($14, bank_held),
+       collection_diff = COALESCE($15, collection_diff),
+       down_payment_percent = COALESCE($16, down_payment_percent)
+     WHERE id=$17 RETURNING *`,
+    [v(b.quantity), v(b.saleAmount), v(b.saleDate), v(b.description), v(b.customerName), v(b.buildingNo),
+     v(b.garageValue), v(b.garageCollected), v(b.maintenanceValue), v(b.maintenanceCollected),
+     v(b.utilitiesValue), v(b.utilitiesCollected), v(b.bankCollected), v(b.bankHeld), v(b.collectionDiff),
+     v(b.downPaymentPercent), req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
   res.json(rows[0]);
 });
 
@@ -706,8 +764,8 @@ app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
     for (const r of rows) {
       if (!r.name || r.quantityIn === undefined || r.quantityIn === null) continue;
       await client.query(
-        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status) VALUES ($1,$2,$3,$4,$5,$6)',
-        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0, r.status || null]
+        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0, r.status || null, r.netArea || null, r.gardenArea || null]
       );
       inserted++;
     }

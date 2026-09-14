@@ -134,7 +134,7 @@
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{} };
   var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
-    analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month' };
+    analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
 
@@ -296,7 +296,10 @@
     var qty = excelToNumber(r['الكمية']);
     if(!name || isNaN(qty)) return null;
     var status = r['الحالة']!==undefined ? String(r['الحالة']||'').trim() : '';
-    return {name:name, unit:String(r['الوحدة']||'').trim(), quantityIn:qty, unitPrice: excelToNumber(r['سعر الوحدة'])||0, status: status||null};
+    var netArea = r['مساحة الوحدة']!==undefined ? excelToNumber(r['مساحة الوحدة']) : NaN;
+    var gardenArea = r['مساحة الجاردن']!==undefined ? excelToNumber(r['مساحة الجاردن']) : NaN;
+    return {name:name, unit:String(r['الوحدة']||'').trim(), quantityIn:qty, unitPrice: excelToNumber(r['سعر الوحدة'])||0, status: status||null,
+      netArea: isNaN(netArea)?null:netArea, gardenArea: isNaN(gardenArea)?null:gardenArea};
   }
   function mapCurrentAccountRowFactory(partnersList){
     var byName = {};
@@ -854,24 +857,49 @@
         '<td class="mono '+(remainingQty<0?'debit':'')+'">'+remainingQty+'</td>'+
         '<td>'+statusTag+'</td>'+
         '<td class="amt">'+money(it.unit_price)+'</td>'+
+        '<td class="mono">'+(it.net_area!=null?it.net_area:'—')+'</td>'+
+        '<td class="mono">'+(it.garden_area!=null?it.garden_area:'—')+'</td>'+
         '<td><button class="del-x" data-del-item="'+it.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="8" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
 
-    var itemOptions = items.map(function(it){return '<option value="'+it.id+'">'+escapeHtml(it.name)+' ('+(Number(it.quantity_in)-(soldByItem[it.id]||0))+' متبقي)</option>';}).join('');
+    var editingSaleForOptions = uiState.editingSaleId ? sales.find(function(s){return s.id===uiState.editingSaleId;}) : null;
+    var itemOptions = items.map(function(it){
+      var rem = Number(it.quantity_in)-(soldByItem[it.id]||0);
+      var isSel = editingSaleForOptions && editingSaleForOptions.item_id===it.id;
+      return '<option value="'+it.id+'" data-price="'+it.unit_price+'"'+(isSel?' selected':'')+'>'+escapeHtml(it.name)+' ('+rem+' متبقي)</option>';
+    }).join('');
 
     var totalSold=0, totalCollected=0;
     var saleRows = sales.map(function(s){
-      var collected = collectedBySale[s.id]||0;
-      var remaining = Number(s.sale_amount) - collected;
+      var collected = collectedBySale[s.id]||0; // المحصل من العميل (dated sub-ledger)
+      var remaining = Number(s.sale_amount) - collected - Number(s.bank_collected||0) - Number(s.bank_held||0);
+      var totalDues = Number(s.sale_amount) + Number(s.garage_value||0) + Number(s.maintenance_value||0) + Number(s.utilities_value||0);
       totalSold += Number(s.sale_amount); totalCollected += collected;
-      return '<tr><td>'+fmtDate(s.sale_date)+'</td><td>'+escapeHtml(s.item_name)+'</td>'+
-        '<td class="mono">'+s.quantity+'</td>'+
+      return '<tr>'+
+        '<td>'+escapeHtml(s.building_no||'—')+'</td>'+
+        '<td>'+escapeHtml(s.item_name)+'</td>'+
+        '<td>'+fmtDate(s.sale_date)+'</td>'+
+        '<td>'+escapeHtml(s.customer_name||'—')+'</td>'+
         '<td class="amt">'+money(s.sale_amount)+'</td>'+
         '<td class="amt credit">'+money(collected)+'</td>'+
+        '<td class="amt credit">'+money(s.bank_collected)+'</td>'+
+        '<td class="amt">'+money(s.bank_held)+'</td>'+
         '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
-        '<td><button class="btn ghost sm" data-collect-sale="'+s.id+'" data-remaining="'+remaining.toFixed(2)+'">تحصيل</button></td>'+
+        '<td class="amt">'+money(s.garage_value)+'</td>'+
+        '<td class="amt credit">'+money(s.garage_collected)+'</td>'+
+        '<td class="amt">'+money(s.maintenance_value)+'</td>'+
+        '<td class="amt credit">'+money(s.maintenance_collected)+'</td>'+
+        '<td class="amt">'+money(s.utilities_value)+'</td>'+
+        '<td class="amt credit">'+money(s.utilities_collected)+'</td>'+
+        '<td class="amt teal">'+money(totalDues)+'</td>'+
+        '<td class="amt">'+money(s.collection_diff)+'</td>'+
+        '<td class="mono">'+(s.down_payment_percent!=null?s.down_payment_percent+'%':'—')+'</td>'+
+        '<td class="mono">'+(s.item_net_area!=null?s.item_net_area:'—')+'</td>'+
+        '<td class="mono">'+(s.item_garden_area!=null?s.item_garden_area:'—')+'</td>'+
+        '<td><button class="btn ghost sm" data-collect-sale="'+s.id+'" data-remaining="'+(Number(s.sale_amount)-collected).toFixed(2)+'">تحصيل</button></td>'+
+        '<td><button class="btn ghost sm" data-edit-sale="'+s.id+'">تعديل</button></td>'+
         '<td><button class="del-x" data-del-sale="'+s.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="8" class="empty">لا توجد مبيعات مسجلة بعد</td></tr>';
+    }).join('') || '<tr><td colspan="22" class="empty">لا توجد مبيعات مسجلة بعد</td></tr>';
     var totalRemaining = totalSold - totalCollected;
 
     var period = uiState.invCollectionPeriod;
@@ -909,16 +937,20 @@
     return '<div class="page-head"><h2>المخزون والتحصيل</h2><p>ما تم بيعه وما تبقى من المخزون، وما تم تحصيله من المبيعات وما تبقى، وكذلك المتبقي من المصروفات.</p></div>'+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
 
-    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
+    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>إضافة صنف جديد للمخزون</h3></div><div class="panel-body">'+
       '<form id="add-item-form"><div class="form-row three">'+
         '<div class="field"><label>اسم الصنف</label><input type="text" id="ni-name" required></div>'+
         '<div class="field"><label>الوحدة</label><input type="text" id="ni-unit" placeholder="قطعة / كرتونة / كجم"></div>'+
         '<div class="field"><label>الكمية الداخلة للمخزون</label><input type="number" id="ni-qty" min="0" step="0.01" required></div>'+
-      '</div><div class="field" style="max-width:240px;"><label>سعر بيع الوحدة</label><input type="number" id="ni-price" min="0" step="0.01"></div>'+
-      '<button class="btn" type="submit">إضافة الصنف</button></form>'+
+      '</div><div class="form-row three">'+
+        '<div class="field"><label>سعر بيع الوحدة</label><input type="number" id="ni-price" min="0" step="0.01"></div>'+
+        '<div class="field"><label>الحالة (اختياري)</label><input type="text" id="ni-status" placeholder="متاح / محجوز / مباع"></div>'+
+        '<div class="field"><label>مساحة الوحدة (اختياري)</label><input type="number" id="ni-net-area" min="0" step="0.01"></div>'+
+      '</div><div class="field" style="max-width:240px;"><label>مساحة الجاردن (اختياري)</label><input type="number" id="ni-garden-area" min="0" step="0.01"></div>'+
+      '<button class="btn" type="submit" style="margin-top:10px;">إضافة الصنف</button></form>'+
     '</div></div>'+
 
     '<div class="grid-stats">'+
@@ -926,19 +958,56 @@
       '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
       '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemaining>0.001?'debit':'credit')+'">'+money(totalRemaining)+'</div></div>'+
     '</div>'+
-    '<div class="panel"><div class="panel-head"><h3>المبيعات</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
-      '<table><thead><tr><th>التاريخ</th><th>الصنف</th><th>الكمية</th><th>قيمة البيع</th><th>المحصّل</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+saleRows+'</tbody></table>'+
+    '<div class="panel"><div class="panel-head"><h3>المبيعات والتحصيلات</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr>'+
+        '<th>رقم العمارة</th><th>رقم الوحدة</th><th>تاريخ التعاقد</th><th>اسم العميل</th>'+
+        '<th>قيمة الوحدة</th><th>المحصل من العميل</th><th>المحصل من البنك</th><th>المحتجز لدى البنك</th><th>المتبقي لدى العميل</th>'+
+        '<th>الجراج</th><th>المحصل من الجراج</th>'+
+        '<th>دفعة الصيانة</th><th>المحصل من دفعة الصيانة</th>'+
+        '<th>المرافق + الصحي</th><th>المحصل من المرافق</th>'+
+        '<th>اجمالي المستحقات</th><th>فروق تحصيل</th><th>نسبة المقدم</th>'+
+        '<th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th><th></th>'+
+      '</tr></thead><tbody>'+saleRows+'</tbody></table>'+
     '</div></div>'+
-    '<div class="panel"><div class="panel-head"><h3>تسجيل عملية بيع</h3></div><div class="panel-body">'+
+    '<div class="panel"><div class="panel-head"><h3>'+(uiState.editingSaleId?'تعديل بيانات عقد البيع':'تسجيل عملية بيع جديدة')+'</h3></div><div class="panel-body">'+
       (items.length===0 ? '<div class="empty">أضف صنفًا للمخزون أولاً.</div>' :
-      '<form id="add-sale-form"><div class="form-row three">'+
-        '<div class="field"><label>الصنف</label><select id="ns-item">'+itemOptions+'</select></div>'+
-        '<div class="field"><label>الكمية المباعة</label><input type="number" id="ns-qty" min="0" step="0.01" required></div>'+
-        '<div class="field"><label>قيمة البيع الإجمالية</label><input type="number" id="ns-amount" min="0" step="0.01" required></div>'+
-      '</div><div class="form-row">'+
-        '<div class="field"><label>تاريخ البيع</label><input type="date" id="ns-date" value="'+todayStr()+'" required></div>'+
-        '<div class="field"><label>ملاحظات</label><input type="text" id="ns-desc"></div>'+
-      '</div><button class="btn" type="submit">تسجيل البيع</button></form>')+
+      (function(){
+        var editing = uiState.editingSaleId ? sales.find(function(s){return s.id===uiState.editingSaleId;}) : null;
+        var g = function(field, def){ return editing && editing[field]!=null ? editing[field] : (def!==undefined?def:''); };
+        return '<form id="add-sale-form" data-editing="'+(editing?editing.id:'')+'">'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>الوحدة (الصنف)</label><select id="ns-item">'+itemOptions+'</select></div>'+
+          '<div class="field"><label>رقم العمارة</label><input type="text" id="ns-building" value="'+escapeHtml(g('building_no'))+'"></div>'+
+          '<div class="field"><label>اسم العميل</label><input type="text" id="ns-customer" value="'+escapeHtml(g('customer_name'))+'"></div>'+
+        '</div>'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>تاريخ التعاقد</label><input type="date" id="ns-date" value="'+(editing?editing.sale_date:todayStr())+'" required></div>'+
+          '<div class="field"><label>قيمة الوحدة</label><input type="number" id="ns-amount" min="0" step="0.01" value="'+g('sale_amount')+'" required></div>'+
+          '<div class="field"><label>الكمية</label><input type="number" id="ns-qty" min="0" step="0.01" value="'+g('quantity',1)+'" required></div>'+
+        '</div>'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>المحصل من البنك</label><input type="number" id="ns-bank-collected" min="0" step="0.01" value="'+g('bank_collected',0)+'"></div>'+
+          '<div class="field"><label>المحتجز لدى البنك</label><input type="number" id="ns-bank-held" min="0" step="0.01" value="'+g('bank_held',0)+'"></div>'+
+          '<div class="field"><label>نسبة المقدم %</label><input type="number" id="ns-down-pct" min="0" max="100" step="0.01" value="'+g('down_payment_percent')+'"></div>'+
+        '</div>'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>قيمة الجراج</label><input type="number" id="ns-garage-value" min="0" step="0.01" value="'+g('garage_value',0)+'"></div>'+
+          '<div class="field"><label>المحصل من الجراج</label><input type="number" id="ns-garage-collected" min="0" step="0.01" value="'+g('garage_collected',0)+'"></div>'+
+          '<div class="field"><label>فروق تحصيل</label><input type="number" id="ns-diff" step="0.01" value="'+g('collection_diff',0)+'"></div>'+
+        '</div>'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>دفعة الصيانة</label><input type="number" id="ns-maint-value" min="0" step="0.01" value="'+g('maintenance_value',0)+'"></div>'+
+          '<div class="field"><label>المحصل من دفعة الصيانة</label><input type="number" id="ns-maint-collected" min="0" step="0.01" value="'+g('maintenance_collected',0)+'"></div>'+
+          '<div class="field"><label>ملاحظات</label><input type="text" id="ns-desc" value="'+escapeHtml(g('description'))+'"></div>'+
+        '</div>'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>المرافق + الصحي</label><input type="number" id="ns-util-value" min="0" step="0.01" value="'+g('utilities_value',0)+'"></div>'+
+          '<div class="field"><label>المحصل من المرافق</label><input type="number" id="ns-util-collected" min="0" step="0.01" value="'+g('utilities_collected',0)+'"></div>'+
+        '</div>'+
+        '<button class="btn" type="submit">'+(editing?'حفظ التعديلات':'تسجيل البيع')+'</button> '+
+        (editing?'<button class="btn ghost" type="button" id="cancel-edit-sale">إلغاء</button>':'')+
+        '</form>';
+      })())+
     '</div></div>'+
 
     '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تفصيل التحصيل على الفترات</h2></div>'+
@@ -953,7 +1022,7 @@
     '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>'+
-    importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة (وعمود اختياري: الحالة — مثل متاح / محجوز / مباع)');
+    importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة (وأعمدة اختيارية: الحالة، مساحة الوحدة، مساحة الجاردن)');
   }
 
   function pageSettings(){
@@ -1200,13 +1269,16 @@
     if(rps) rps.addEventListener('change', function(){ uiState.reportProjectId = Number(rps.value); loadAdminPage(); });
 
     var ips = document.getElementById('inv-project-select');
-    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); loadAdminPage(); });
+    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); uiState.editingSaleId=null; loadAdminPage(); });
     var aif = document.getElementById('add-item-form');
     if(aif) aif.addEventListener('submit', async function(ev){
       ev.preventDefault();
       var body = { projectId: uiState.invProjectId, name: document.getElementById('ni-name').value.trim(),
         unit: document.getElementById('ni-unit').value.trim(), quantityIn: parseFloat(document.getElementById('ni-qty').value),
-        unitPrice: parseFloat(document.getElementById('ni-price').value)||0 };
+        unitPrice: parseFloat(document.getElementById('ni-price').value)||0,
+        status: document.getElementById('ni-status').value.trim() || null,
+        netArea: document.getElementById('ni-net-area').value ? parseFloat(document.getElementById('ni-net-area').value) : null,
+        gardenArea: document.getElementById('ni-garden-area').value ? parseFloat(document.getElementById('ni-garden-area').value) : null };
       try{ await api('POST','/inventory/items',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
     document.querySelectorAll('[data-del-item]').forEach(function(btn){
@@ -1215,14 +1287,50 @@
         try{ await api('DELETE','/inventory/items/'+btn.getAttribute('data-del-item')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
+    var nsItem = document.getElementById('ns-item');
+    if(nsItem) nsItem.addEventListener('change', function(){
+      var opt = nsItem.options[nsItem.selectedIndex];
+      var price = opt ? opt.getAttribute('data-price') : null;
+      var amountInput = document.getElementById('ns-amount');
+      if(price!=null && amountInput && !uiState.editingSaleId) amountInput.value = price;
+    });
     var asf = document.getElementById('add-sale-form');
     if(asf) asf.addEventListener('submit', async function(ev){
       ev.preventDefault();
+      var editingId = asf.getAttribute('data-editing');
       var body = { projectId: uiState.invProjectId, itemId: Number(document.getElementById('ns-item').value),
-        quantity: parseFloat(document.getElementById('ns-qty').value), saleAmount: parseFloat(document.getElementById('ns-amount').value),
-        saleDate: document.getElementById('ns-date').value, description: document.getElementById('ns-desc').value.trim() };
-      try{ await api('POST','/inventory/sales',body); invalidateAndReload(); } catch(e){ alert(e.message); }
+        quantity: parseFloat(document.getElementById('ns-qty').value)||1,
+        saleAmount: parseFloat(document.getElementById('ns-amount').value),
+        saleDate: document.getElementById('ns-date').value,
+        description: document.getElementById('ns-desc').value.trim(),
+        customerName: document.getElementById('ns-customer').value.trim(),
+        buildingNo: document.getElementById('ns-building').value.trim(),
+        bankCollected: parseFloat(document.getElementById('ns-bank-collected').value)||0,
+        bankHeld: parseFloat(document.getElementById('ns-bank-held').value)||0,
+        downPaymentPercent: document.getElementById('ns-down-pct').value ? parseFloat(document.getElementById('ns-down-pct').value) : null,
+        garageValue: parseFloat(document.getElementById('ns-garage-value').value)||0,
+        garageCollected: parseFloat(document.getElementById('ns-garage-collected').value)||0,
+        collectionDiff: parseFloat(document.getElementById('ns-diff').value)||0,
+        maintenanceValue: parseFloat(document.getElementById('ns-maint-value').value)||0,
+        maintenanceCollected: parseFloat(document.getElementById('ns-maint-collected').value)||0,
+        utilitiesValue: parseFloat(document.getElementById('ns-util-value').value)||0,
+        utilitiesCollected: parseFloat(document.getElementById('ns-util-collected').value)||0 };
+      try{
+        if(editingId){ await api('PUT','/inventory/sales/'+editingId, body); uiState.editingSaleId=null; }
+        else { await api('POST','/inventory/sales', body); }
+        invalidateAndReload();
+      } catch(e){ alert(e.message); }
     });
+    document.querySelectorAll('[data-edit-sale]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        uiState.editingSaleId = Number(btn.getAttribute('data-edit-sale'));
+        renderAdminMain();
+        var panel = document.getElementById('add-sale-form');
+        if(panel) panel.scrollIntoView({behavior:'smooth', block:'center'});
+      });
+    });
+    var cancelEditBtn = document.getElementById('cancel-edit-sale');
+    if(cancelEditBtn) cancelEditBtn.addEventListener('click', function(){ uiState.editingSaleId=null; renderAdminMain(); });
     document.querySelectorAll('[data-del-sale]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         try{ await api('DELETE','/inventory/sales/'+btn.getAttribute('data-del-sale')); invalidateAndReload(); } catch(e){ alert(e.message); }
@@ -1232,7 +1340,7 @@
       btn.addEventListener('click', async function(){
         var saleId = btn.getAttribute('data-collect-sale');
         var maxRemaining = btn.getAttribute('data-remaining');
-        var amountStr = prompt('مبلغ التحصيل (المتبقي: '+maxRemaining+')', maxRemaining);
+        var amountStr = prompt('مبلغ التحصيل من العميل (المتبقي من قيمة الوحدة: '+maxRemaining+')', maxRemaining);
         if(amountStr===null) return;
         var amount = parseFloat(amountStr);
         if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
@@ -1262,7 +1370,7 @@
     bindTemplateButton('import-exp', 'نموذج_استيراد_المصروفات.xlsx', 'المصروفات',
       ['التاريخ','البيان','المبلغ','التصنيف'], ['2026-01-15','إيجار المخزن شهر يناير',3000,'إيجار']);
     bindTemplateButton('import-inv', 'نموذج_استيراد_المخزون.xlsx', 'المخزون',
-      ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح']);
+      ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة','مساحة الوحدة','مساحة الجاردن'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح','','']);
     bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
       ['التاريخ','اسم الشريك','النوع','المبلغ','البيان'], ['2026-01-10','محمد أحمد','إيداع',5000,'إيداع نقدي في حساب المشروع']);
 
