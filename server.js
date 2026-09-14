@@ -470,6 +470,13 @@ app.delete('/api/entries/:id', auth, requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/entries/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM entries WHERE id = ANY($1::int[])', [ids]);
+  res.json({ ok: true, deleted: ids.length });
+});
+
 // ---------------------------------------------------------------------------
 // Expense payments (تحصيل/سداد المصروفات — المتبقي من كل مصروف)
 // ---------------------------------------------------------------------------
@@ -528,6 +535,13 @@ app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
 app.delete('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM inventory_items WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.post('/api/inventory/items/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM inventory_items WHERE id = ANY($1::int[])', [ids]);
+  res.json({ ok: true, deleted: ids.length });
 });
 
 app.get('/api/inventory/sales', auth, async (req, res) => {
@@ -603,6 +617,13 @@ app.delete('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/inventory/sales/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM inventory_sales WHERE id = ANY($1::int[])', [ids]);
+  res.json({ ok: true, deleted: ids.length });
+});
+
 app.get('/api/inventory/collections', auth, async (req, res) => {
   const projectId = req.query.projectId;
   if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
@@ -629,6 +650,13 @@ app.post('/api/inventory/collections', auth, requireAdmin, async (req, res) => {
 app.delete('/api/inventory/collections/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM sale_collections WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.post('/api/inventory/collections/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM sale_collections WHERE id = ANY($1::int[])', [ids]);
+  res.json({ ok: true, deleted: ids.length });
 });
 
 // ---------------------------------------------------------------------------
@@ -666,6 +694,13 @@ app.post('/api/current-account', auth, requireAdmin, async (req, res) => {
 app.delete('/api/current-account/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM current_account WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.post('/api/current-account/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM current_account WHERE id = ANY($1::int[])', [ids]);
+  res.json({ ok: true, deleted: ids.length });
 });
 
 // ---------------------------------------------------------------------------
