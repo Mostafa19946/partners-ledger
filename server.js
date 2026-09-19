@@ -22,6 +22,12 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
+function isValidISODate(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(s + 'T00:00:00Z');
+  return !isNaN(d) && d.toISOString().slice(0, 10) === s;
+}
+
 // ---------------------------------------------------------------------------
 // Schema bootstrap (idempotent) + admin seed
 // ---------------------------------------------------------------------------
@@ -375,8 +381,8 @@ app.post('/api/companies/:id/expenses/bulk-delete', auth, requireAdmin, async (r
 app.post('/api/companies/:id/expenses/bulk', auth, requireAdmin, async (req, res) => {
   const { rows } = req.body || {};
   if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const valid = rows.filter(r => r.amount && r.date);
-  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
+  const valid = rows.filter(r => r.amount && r.date && isValidISODate(r.date));
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ)' });
   try {
     await pool.query(
       `INSERT INTO company_expenses (company_id, category, amount, description, entry_date)
@@ -865,8 +871,8 @@ app.post('/api/entries/bulk', auth, requireAdmin, async (req, res) => {
   if (!projectId || !['revenue', 'expense'].includes(kind) || !Array.isArray(rows) || !rows.length) {
     return res.status(400).json({ error: 'بيانات ناقصة' });
   }
-  const valid = rows.filter(r => r.amount && r.date);
-  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
+  const valid = rows.filter(r => r.amount && r.date && isValidISODate(r.date));
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ)' });
   const amounts = valid.map(r => r.amount);
   const descriptions = valid.map(r => r.description || null);
   const dates = valid.map(r => r.date);
@@ -911,8 +917,8 @@ app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
 app.post('/api/current-account/bulk', auth, requireAdmin, async (req, res) => {
   const { projectId, rows } = req.body || {}; // rows: [{partnerId, kind, amount, date, description}]
   if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const valid = rows.filter(r => r.partnerId && r.amount && r.date && ['deposit', 'withdrawal', 'distribution'].includes(r.kind));
-  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
+  const valid = rows.filter(r => r.partnerId && r.amount && r.date && isValidISODate(r.date) && ['deposit', 'withdrawal', 'distribution'].includes(r.kind));
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ والنوع)' });
   try {
     await pool.query(
       `INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date)
