@@ -20,7 +20,7 @@ const pool = new Pool({
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
 
 // ---------------------------------------------------------------------------
 // Schema bootstrap (idempotent) + admin seed
@@ -375,25 +375,20 @@ app.post('/api/companies/:id/expenses/bulk-delete', auth, requireAdmin, async (r
 app.post('/api/companies/:id/expenses/bulk', auth, requireAdmin, async (req, res) => {
   const { rows } = req.body || {};
   if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const client = await pool.connect();
+  const valid = rows.filter(r => r.amount && r.date);
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
   try {
-    await client.query('BEGIN');
-    let inserted = 0;
-    for (const r of rows) {
-      if (!r.amount || !r.date) continue;
-      await client.query(
-        'INSERT INTO company_expenses (company_id, category, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5)',
-        [req.params.id, r.category || 'أخرى', r.amount, r.description || null, r.date]
-      );
-      inserted++;
-    }
-    await client.query('COMMIT');
-    res.json({ inserted });
+    await pool.query(
+      `INSERT INTO company_expenses (company_id, category, amount, description, entry_date)
+       SELECT $1, u.category, u.amount, u.description, u.entry_date
+       FROM UNNEST($2::text[], $3::numeric[], $4::text[], $5::date[]) AS u(category, amount, description, entry_date)`,
+      [req.params.id, valid.map(r => r.category || 'أخرى'), valid.map(r => r.amount),
+       valid.map(r => r.description || null), valid.map(r => r.date)]
+    );
+    res.json({ inserted: valid.length });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'فشل الاستيراد' });
-  } finally {
-    client.release();
+    console.error('company expenses bulk import failed', e);
+    res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
   }
 });
 
@@ -870,75 +865,67 @@ app.post('/api/entries/bulk', auth, requireAdmin, async (req, res) => {
   if (!projectId || !['revenue', 'expense'].includes(kind) || !Array.isArray(rows) || !rows.length) {
     return res.status(400).json({ error: 'بيانات ناقصة' });
   }
-  const client = await pool.connect();
+  const valid = rows.filter(r => r.amount && r.date);
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
+  const amounts = valid.map(r => r.amount);
+  const descriptions = valid.map(r => r.description || null);
+  const dates = valid.map(r => r.date);
+  const categories = valid.map(r => (kind === 'expense' ? (r.category || 'أخرى') : null));
   try {
-    await client.query('BEGIN');
-    let inserted = 0;
-    for (const r of rows) {
-      if (!r.amount || !r.date) continue;
-      await client.query(
-        'INSERT INTO entries (project_id, kind, amount, description, entry_date, category) VALUES ($1,$2,$3,$4,$5,$6)',
-        [projectId, kind, r.amount, r.description || null, r.date, kind === 'expense' ? (r.category || 'أخرى') : null]
-      );
-      inserted++;
-    }
-    await client.query('COMMIT');
-    res.json({ inserted });
+    await pool.query(
+      `INSERT INTO entries (project_id, kind, amount, description, entry_date, category)
+       SELECT $1, $2, u.amount, u.description, u.entry_date, u.category
+       FROM UNNEST($3::numeric[], $4::text[], $5::date[], $6::text[]) AS u(amount, description, entry_date, category)`,
+      [projectId, kind, amounts, descriptions, dates, categories]
+    );
+    res.json({ inserted: valid.length });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'فشل الاستيراد' });
-  } finally {
-    client.release();
+    console.error('entries bulk import failed', e);
+    res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
   }
 });
 
 app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
   const { projectId, rows } = req.body || {};
   if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const client = await pool.connect();
+  const valid = rows.filter(r => r.name && r.quantityIn !== undefined && r.quantityIn !== null);
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
   try {
-    await client.query('BEGIN');
-    let inserted = 0;
-    for (const r of rows) {
-      if (!r.name || r.quantityIn === undefined || r.quantityIn === null) continue;
-      await client.query(
-        'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [projectId, r.name, r.unit || null, r.quantityIn, r.unitPrice || 0, r.status || null, r.netArea || null, r.gardenArea || null]
-      );
-      inserted++;
-    }
-    await client.query('COMMIT');
-    res.json({ inserted });
+    await pool.query(
+      `INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area)
+       SELECT $1, u.name, u.unit, u.quantity_in, u.unit_price, u.status, u.net_area, u.garden_area
+       FROM UNNEST($2::text[], $3::text[], $4::numeric[], $5::numeric[], $6::text[], $7::numeric[], $8::numeric[])
+         AS u(name, unit, quantity_in, unit_price, status, net_area, garden_area)`,
+      [projectId,
+       valid.map(r => r.name), valid.map(r => r.unit || null),
+       valid.map(r => r.quantityIn), valid.map(r => r.unitPrice || 0),
+       valid.map(r => r.status || null), valid.map(r => r.netArea || null), valid.map(r => r.gardenArea || null)]
+    );
+    res.json({ inserted: valid.length });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'فشل الاستيراد' });
-  } finally {
-    client.release();
+    console.error('inventory items bulk import failed', e);
+    res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
   }
 });
 
 app.post('/api/current-account/bulk', auth, requireAdmin, async (req, res) => {
   const { projectId, rows } = req.body || {}; // rows: [{partnerId, kind, amount, date, description}]
   if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const client = await pool.connect();
+  const valid = rows.filter(r => r.partnerId && r.amount && r.date && ['deposit', 'withdrawal', 'distribution'].includes(r.kind));
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
   try {
-    await client.query('BEGIN');
-    let inserted = 0;
-    for (const r of rows) {
-      if (!r.partnerId || !r.amount || !r.date || !['deposit', 'withdrawal', 'distribution'].includes(r.kind)) continue;
-      await client.query(
-        'INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5,$6)',
-        [projectId, r.partnerId, r.kind, r.amount, r.description || null, r.date]
-      );
-      inserted++;
-    }
-    await client.query('COMMIT');
-    res.json({ inserted });
+    await pool.query(
+      `INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date)
+       SELECT $1, u.partner_id, u.kind, u.amount, u.description, u.entry_date
+       FROM UNNEST($2::int[], $3::text[], $4::numeric[], $5::text[], $6::date[])
+         AS u(partner_id, kind, amount, description, entry_date)`,
+      [projectId, valid.map(r => r.partnerId), valid.map(r => r.kind),
+       valid.map(r => r.amount), valid.map(r => r.description || null), valid.map(r => r.date)]
+    );
+    res.json({ inserted: valid.length });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'فشل الاستيراد' });
-  } finally {
-    client.release();
+    console.error('current-account bulk import failed', e);
+    res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
   }
 });
 
