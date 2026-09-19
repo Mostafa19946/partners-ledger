@@ -50,6 +50,15 @@ async function initDb() {
       percentage NUMERIC NOT NULL,
       UNIQUE(company_id, partner_id)
     );
+    CREATE TABLE IF NOT EXISTS company_expenses (
+      id SERIAL PRIMARY KEY,
+      company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      category TEXT,
+      amount NUMERIC NOT NULL,
+      description TEXT,
+      entry_date DATE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL
@@ -330,6 +339,100 @@ app.put('/api/companies/:id/partners/:partnerId', auth, requireAdmin, async (req
 app.delete('/api/companies/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM company_partners WHERE company_id=$1 AND partner_id=$2', [req.params.id, req.params.partnerId]);
   res.json({ ok: true });
+});
+
+// Company-level general/administrative expenses (separate from each project's own costs)
+app.get('/api/companies/:id/expenses', auth, requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM company_expenses WHERE company_id=$1 ORDER BY entry_date DESC, created_at DESC',
+    [req.params.id]
+  );
+  res.json(rows);
+});
+
+app.post('/api/companies/:id/expenses', auth, requireAdmin, async (req, res) => {
+  const { category, amount, date, description } = req.body || {};
+  if (!amount || !date) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { rows } = await pool.query(
+    'INSERT INTO company_expenses (company_id, category, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    [req.params.id, category || 'أخرى', amount, description || null, date]
+  );
+  res.json(rows[0]);
+});
+
+app.delete('/api/companies/:id/expenses/:expenseId', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM company_expenses WHERE id=$1 AND company_id=$2', [req.params.expenseId, req.params.id]);
+  res.json({ ok: true });
+});
+
+app.post('/api/companies/:id/expenses/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM company_expenses WHERE id = ANY($1::int[]) AND company_id=$2', [ids, req.params.id]);
+  res.json({ ok: true, deleted: ids.length });
+});
+
+app.post('/api/companies/:id/expenses/bulk', auth, requireAdmin, async (req, res) => {
+  const { rows } = req.body || {};
+  if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let inserted = 0;
+    for (const r of rows) {
+      if (!r.amount || !r.date) continue;
+      await client.query(
+        'INSERT INTO company_expenses (company_id, category, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5)',
+        [req.params.id, r.category || 'أخرى', r.amount, r.description || null, r.date]
+      );
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.json({ inserted });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'فشل الاستيراد' });
+  } finally {
+    client.release();
+  }
+});
+
+// Aggregate report: company's own general expenses + costs and revenue of every project under it
+app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
+  const companyId = req.params.id;
+  const companyExpRows = (await pool.query(
+    'SELECT category, COALESCE(SUM(amount),0) AS t FROM company_expenses WHERE company_id=$1 GROUP BY category',
+    [companyId]
+  )).rows;
+  const companyExpenses = companyExpRows.reduce((s, r) => s + Number(r.t), 0);
+  const companyExpensesByCategory = companyExpRows.map(r => ({ category: r.category || 'أخرى', total: Number(r.t) }));
+
+  const projRows = (await pool.query(`
+    SELECT pr.id, pr.name,
+      COALESCE(SUM(CASE WHEN e.kind='revenue' THEN e.amount ELSE 0 END),0) AS revenue,
+      COALESCE(SUM(CASE WHEN e.kind='expense' THEN e.amount ELSE 0 END),0) AS expense
+    FROM projects pr
+    LEFT JOIN entries e ON e.project_id = pr.id
+    WHERE pr.company_id = $1
+    GROUP BY pr.id, pr.name
+    ORDER BY pr.id
+  `, [companyId])).rows;
+  const projects = projRows.map(p => ({
+    id: p.id, name: p.name, revenue: Number(p.revenue), expense: Number(p.expense), net: Number(p.revenue) - Number(p.expense)
+  }));
+  const totalProjectRevenue = projects.reduce((s, p) => s + p.revenue, 0);
+  const totalProjectExpense = projects.reduce((s, p) => s + p.expense, 0);
+
+  res.json({
+    companyId: Number(companyId),
+    companyExpenses,
+    companyExpensesByCategory,
+    projects,
+    totalProjectRevenue,
+    totalProjectExpense,
+    grandTotalExpenses: companyExpenses + totalProjectExpense,
+    grandNet: totalProjectRevenue - (companyExpenses + totalProjectExpense)
+  });
 });
 
 // ---------------------------------------------------------------------------

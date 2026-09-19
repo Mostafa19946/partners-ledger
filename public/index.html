@@ -132,11 +132,13 @@
   var adminTab = 'partners';
   var partnerActiveProject = null;
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
-    expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{} };
+    expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
+    companyExpenses:{}, companyReports:{} };
   var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
+  var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','شراء أصول','مصاريف دعاية وتسويق','أخرى'];
 
   function pad2(n){ return n<10 ? '0'+n : ''+n; }
   function periodKeyLabel(dateStr, period){
@@ -460,6 +462,12 @@
       else if(adminTab==='companies'){
         var coRes = await Promise.all([api('GET','/partners'), api('GET','/companies')]);
         cache.partners = coRes[0]; cache.companies = coRes[1];
+        var extraCalls = [];
+        cache.companies.forEach(function(co){
+          extraCalls.push(api('GET','/companies/'+co.id+'/expenses').then(function(r){ cache.companyExpenses[co.id]=r; }));
+          extraCalls.push(api('GET','/companies/'+co.id+'/report').then(function(r){ cache.companyReports[co.id]=r; }));
+        });
+        await Promise.all(extraCalls);
       }
       else if(adminTab==='projects'){
         var pr = await Promise.all([api('GET','/partners'), api('GET','/projects'), api('GET','/companies')]);
@@ -621,6 +629,25 @@
       var addableOptions = cache.partners.filter(function(p){return currentPartnerIds.indexOf(p.id)===-1;})
         .map(function(p){return '<option value="'+p.id+'">'+escapeHtml(p.name)+'</option>';}).join('');
 
+      var rep = cache.companyReports[co.id];
+      var tableKey = 'company-exp-'+co.id;
+      var expList = cache.companyExpenses[co.id] || [];
+      var expRows = expList.map(function(e){
+        return '<tr>'+selectColCell(tableKey, e.id)+
+          '<td>'+fmtDate(e.entry_date)+'</td>'+
+          '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>'+
+          '<td>'+escapeHtml(e.description||'—')+'</td>'+
+          '<td class="amt debit">'+money(e.amount)+'</td>'+
+          '<td><button class="del-x" data-del-co-exp="'+co.id+'" data-co-exp-id="'+e.id+'">✕</button></td></tr>';
+      }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف عمومية مسجلة بعد</td></tr>';
+
+      var catOptions = COMPANY_EXPENSE_CATEGORIES.map(function(c){return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>';}).join('');
+
+      var projectRows = rep ? rep.projects.map(function(p){
+        return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt credit">'+money(p.revenue)+'</td><td class="amt debit">'+money(p.expense)+'</td>'+
+          '<td class="amt '+(p.net>=0?'credit':'debit')+'">'+money(p.net)+'</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="empty">لا توجد مشاريع لهذه الشركة بعد</td></tr>' : '';
+
       return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(co.name)+'</h3>'+
         '<button class="btn danger sm" data-del-company="'+co.id+'">حذف الشركة</button></div>'+
         '<div class="panel-body">'+
@@ -632,10 +659,36 @@
               '<div class="field"><label>النسبة %</label><input type="number" class="add-co-share-pct" data-company="'+co.id+'" min="0" max="100" step="0.01" value="0"></div>'+
             '</div><button class="btn sm" data-add-co-share="'+co.id+'">إضافة الشريك للشركة</button>'
           ) : '')+
+
+          (rep ? (
+            '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">الملخص المالي الإجمالي للشركة</h3>'+
+            '<div class="grid-stats">'+
+              '<div class="stat"><div class="label">إجمالي إيرادات كل المشاريع</div><div class="val credit">'+money(rep.totalProjectRevenue)+'</div></div>'+
+              '<div class="stat"><div class="label">إجمالي تكاليف المشاريع</div><div class="val debit">'+money(rep.totalProjectExpense)+'</div></div>'+
+              '<div class="stat"><div class="label">مصاريف الشركة العمومية والإدارية</div><div class="val debit">'+money(rep.companyExpenses)+'</div></div>'+
+              '<div class="stat"><div class="label">إجمالي كل المصاريف</div><div class="val debit">'+money(rep.grandTotalExpenses)+'</div></div>'+
+              '<div class="stat"><div class="label">صافي ربح الشركة الكلي</div><div class="val '+(rep.grandNet>=0?'credit':'debit')+'">'+money(rep.grandNet)+'</div></div>'+
+            '</div>'+
+            '<table><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th></tr></thead><tbody>'+projectRows+'</tbody></table>'
+          ) : '')+
+
+          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">المصاريف العمومية والإدارية الخاصة بالشركة</h3>'+
+          '<div class="muted-note">مصاريف عامة للشركة نفسها (زي إدارة عمومية، شراء أصول، دعاية وتسويق) — منفصلة عن تكاليف كل مشروع.</div>'+
+          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(tableKey)+'</div>'+
+          '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+expRows+'</tbody></table></div>'+
+          '<form class="add-co-expense-form" data-company="'+co.id+'" style="margin-top:14px;">'+
+            '<div class="form-row three">'+
+              '<div class="field"><label>التصنيف</label><select class="co-exp-category">'+catOptions+'</select></div>'+
+              '<div class="field"><label>المبلغ</label><input type="number" class="co-exp-amount" min="0" step="0.01" required></div>'+
+              '<div class="field"><label>التاريخ</label><input type="date" class="co-exp-date" value="'+todayStr()+'" required></div>'+
+            '</div>'+
+            '<div class="field"><label>الوصف / البيان</label><input type="text" class="co-exp-desc"></div>'+
+            '<button class="btn" type="submit" style="margin-top:8px;">إضافة مصروف</button>'+
+          '</form>'+
         '</div></div>';
     }).join('');
 
-    return '<div class="page-head"><h2>الشركات</h2><p>نسبة مشاركة كل شريك على مستوى الشركة ككل، منفصلة عن نسبته في كل مشروع على حدة.</p></div>'+
+    return '<div class="page-head"><h2>الشركات</h2><p>نسبة مشاركة كل شريك على مستوى الشركة، مصاريف الشركة العمومية، وملخص مالي إجمالي يجمع كل المشاريع.</p></div>'+
     (cards || '<div class="panel"><div class="empty">لا توجد شركات بعد</div></div>')+
     '<div class="panel"><div class="panel-head"><h3>إضافة شركة جديدة</h3></div><div class="panel-body">'+
       '<form id="add-company-form">'+
@@ -1137,6 +1190,31 @@
         try{ await api('DELETE','/companies/'+btn.getAttribute('data-del-company')); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
+    });
+    document.querySelectorAll('.add-co-expense-form').forEach(function(form){
+      form.addEventListener('submit', async function(ev){
+        ev.preventDefault();
+        var cid = form.getAttribute('data-company');
+        var body = {
+          category: form.querySelector('.co-exp-category').value,
+          amount: parseFloat(form.querySelector('.co-exp-amount').value),
+          date: form.querySelector('.co-exp-date').value,
+          description: form.querySelector('.co-exp-desc').value.trim()
+        };
+        try{ await api('POST','/companies/'+cid+'/expenses',body); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-del-co-exp]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var cid = btn.getAttribute('data-del-co-exp');
+        var eid = btn.getAttribute('data-co-exp-id');
+        try{ await api('DELETE','/companies/'+cid+'/expenses/'+eid); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    cache.companies.forEach(function(co){
+      bindSelectableTable('company-exp-'+co.id, '/companies/'+co.id+'/expenses/bulk-delete');
     });
     document.querySelectorAll('[data-save-co-share]').forEach(function(btn){
       btn.addEventListener('click', async function(){
