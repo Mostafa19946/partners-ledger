@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
+const { Pool, types: pgTypes } = require('pg');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
@@ -13,10 +13,89 @@ const ADMIN_NAME = process.env.ADMIN_NAME || 'مدير الحسابات';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('render.com')
+  ssl: process.env.DATABASE_URL && /render\.com|neon\.tech/.test(process.env.DATABASE_URL)
     ? { rejectUnauthorized: false }
     : false
 });
+// An idle connection dropped by the database (e.g. a Neon compute that went to sleep) must not crash the server
+pool.on('error', (err) => console.error('Idle database client error:', err.message));
+
+// ---------------------------------------------------------------------------
+// One-time data copy from another database (used to move to a new database host).
+// Runs only when MIGRATE_FROM_DATABASE_URL is set AND the target database is empty.
+// The whole copy is a single transaction; if anything does not match, nothing is kept.
+// ---------------------------------------------------------------------------
+const MIGRATION_TABLES = [
+  ['partners', null], ['users', null], ['companies', null], ['company_partners', 'percentage'],
+  ['projects', null], ['project_partners', 'percentage'], ['entries', 'amount'],
+  ['expense_payments', 'amount'], ['current_account', 'amount'], ['inventory_items', 'unit_price'],
+  ['inventory_sales', 'sale_amount'], ['sale_collections', 'amount'], ['company_expenses', 'amount'],
+  ['expense_items', null]
+];
+
+async function migrateFromSourceIfRequested() {
+  const srcUrl = process.env.MIGRATE_FROM_DATABASE_URL;
+  if (!srcUrl) return;
+
+  let existing = 0;
+  for (const [t] of MIGRATION_TABLES) {
+    existing += (await pool.query(`SELECT COUNT(*)::int AS c FROM ${t}`)).rows[0].c;
+  }
+  if (existing > 0) {
+    console.log('MIGRATION skipped: the target database already contains data.');
+    return;
+  }
+
+  // Read dates/timestamps from the source as raw text so nothing shifts between time zones
+  const src = new Pool({
+    connectionString: srcUrl,
+    ssl: /render\.com|neon\.tech/.test(srcUrl) ? { rejectUnauthorized: false } : false,
+    types: { getTypeParser: (oid, fmt) => ([1082, 1114, 1184].includes(oid) ? (v => v) : pgTypes.getTypeParser(oid, fmt)) }
+  });
+  src.on('error', (err) => console.error('Migration source client error:', err.message));
+
+  const client = await pool.connect();
+  try {
+    console.log('MIGRATION started: copying data from the source database...');
+    await client.query('BEGIN');
+    const report = [];
+    for (const [table, sumCol] of MIGRATION_TABLES) {
+      const srcRows = (await src.query(`SELECT * FROM ${table} ORDER BY id`)).rows;
+      const srcSum = sumCol
+        ? (await src.query(`SELECT COALESCE(SUM(${sumCol}),0)::text AS s FROM ${table}`)).rows[0].s
+        : null;
+      if (srcRows.length) {
+        const cols = Object.keys(srcRows[0]).map(c => `"${c}"`).join(', ');
+        for (let i = 0; i < srcRows.length; i += 1000) {
+          await client.query(
+            `INSERT INTO ${table} (${cols}) SELECT ${cols} FROM json_populate_recordset(NULL::${table}, $1::json)`,
+            [JSON.stringify(srcRows.slice(i, i + 1000))]
+          );
+        }
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence('${table}', 'id'), (SELECT MAX(id) FROM ${table}), true)`
+        );
+      }
+      const dstCount = (await client.query(`SELECT COUNT(*)::int AS c FROM ${table}`)).rows[0].c;
+      const dstSum = sumCol
+        ? (await client.query(`SELECT COALESCE(SUM(${sumCol}),0)::text AS s FROM ${table}`)).rows[0].s
+        : null;
+      if (dstCount !== srcRows.length || (sumCol && Number(dstSum) !== Number(srcSum))) {
+        throw new Error(`Mismatch in ${table}: source ${srcRows.length} rows / ${srcSum}, target ${dstCount} rows / ${dstSum}`);
+      }
+      report.push(`${table}=${dstCount}`);
+    }
+    await client.query('COMMIT');
+    console.log('MIGRATION OK -> ' + report.join(', '));
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('MIGRATION FAILED (nothing was copied):', e.message);
+    throw e;
+  } finally {
+    client.release();
+    await src.end().catch(() => {});
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -167,6 +246,8 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+
+  await migrateFromSourceIfRequested();
 
   // Seed the default expense items once
   const itemCount = (await pool.query('SELECT COUNT(*)::int AS c FROM expense_items')).rows[0].c;
