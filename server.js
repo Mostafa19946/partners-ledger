@@ -22,6 +22,17 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
+// Default expense items (chart of items). Seeded once when the expense_items table is empty.
+const DEFAULT_EXPENSE_CHART = [{"n":"تكاليف العمليات","c":[{"n":"تكاليف ارض المشروع","c":[{"n":"ارض المشروع - قيمه العقد"},{"n":"ارض المشروع - اوفر شراء"},{"n":"ارض المشروع - رسوم انهاء إجراءات"},{"n":"اتعاب اشراف"},{"n":"ارض المشروع -رسوم تمويل عقاري"},{"n":"اتعاب اشراف -رسومات وتصميمات هندسية"}]},{"n":"تكلفه اعمال اعتياديه","c":[{"n":"حفر - رمل - زلط"},{"n":"اعمال الاساسات و الخرسانه"},{"n":"اعمال المبانى و الطوب"},{"n":"اعمال البياض"},{"n":"اعمال الدهانات"},{"n":"اعمال العزل"},{"n":"اعمال الكهرباء"},{"n":"اعمال الرخام"},{"n":"اعمال السيراميك و البلاط"},{"n":"اعمال نجاره باب و شباك"},{"n":"اعمال نجاره مسلحه"},{"n":"حديد مسلح"},{"n":"اعمال صحى و سباكه"},{"n":"اعمال الومنيوم"},{"n":"اعمال حديد المشغول - كريتال"},{"n":"اعمال الزجاج"},{"n":"اعمال الهدم و التشويينات"},{"n":"اعمال جبس و فيوتيك"},{"n":"اعمال ديكورات"},{"n":"اعمال التكييفات"},{"n":"اعمال المصاعد و السلالم"},{"n":"اعمال الارصفه و الحدائق"},{"n":"اعمال تجهيزات الموقع"},{"n":"اعمال متنوعه و مستجده"},{"n":"اعمال الزراعات"}]},{"n":"تكاليف غير مباشره","c":[{"n":"مرتبات مواقع"},{"n":"مصاريف انتقالات مشاريع"},{"n":"عده و نقل عده"},{"n":"مصاريف ضيافه مواقع"},{"n":"مصاريف نثريه و اكراميات"},{"n":"مياه و كهرباء و غاز"},{"n":"مصاريف متنوعه"},{"n":"ايجار معدات"},{"n":"امن و حراسه"},{"n":"عمولات و سمسره مشاريع"},{"n":"فروقات استرجاع وحدات"},{"n":"ارباح مساهمين في المشروع"},{"n":"عوائد استثمار المقدم عملاء رواسين"},{"n":"اقفال تكاليف مشروعات"},{"n":"حساب تخفيض تكلفة جاردينيا 1"}]}]},{"n":"مصاريف عموميه و اداريه","c":[{"n":"المرتبات و مزايا عينيه","c":[{"n":"مرتبات الموظفين و الاداره","c":[{"n":"مرتبات اعضاء مجلس الاداره"},{"n":"مرتبات الموظفيين"},{"n":"خصومات وجزءات الموظفين"}]},{"n":"مكافات و حوافز و بدلات"},{"n":"مزايا عينيه","c":[{"n":"مزايا عينيه - رحلات"},{"n":"مزايا عينيه - منح و دراسات تعليميه"},{"n":"مزايا عينيه - مصاريف تاميين علاجى"},{"n":"مزايا عينيه - منح مناسبات"},{"n":"مزايا عينية-يونيفرم"}]},{"n":"عمولات تعيينات"}]},{"n":"مصاريف انتقالات و سفر و اقامه"},{"n":"مال الله - صدقات"},{"n":"مصاريف نثريه"},{"n":"مصاريف بنكيه"},{"n":"فوائد مدينه"},{"n":"مصروف اهلاك أصول ثابته"},{"n":"رسوم حكوميه و اشتراكات"},{"n":"مصروفات تأسيس"},{"n":"مطبوعات اداريه"},{"n":"مصروفات ضيافه و نظافه"},{"n":"هدايا و اكراميات"},{"n":"مصاريف مياه و كهرباء و غاز"},{"n":"مصاريف تليفونات و نت و كروت شحن"},{"n":"مصارييف ادوات مكتبيه"},{"n":"مصاريف الصيانه"},{"n":"تامينات اجتماعية"},{"n":"ايجارات"},{"n":"مصاريف نقل وشحن"},{"n":"مصاريف ماليه و قانونيه","c":[{"n":"اتعاب ماليه"},{"n":"اتعاب مكتب بيت المحاسبه"},{"n":"اتعاب قانونيه"},{"n":"اتعاب محاماه"}]},{"n":"مصاريف بنزين سيارات"},{"n":"مصاريف اجتماعات اداريه و تدريب اداريه"},{"n":"مصاريف تجهيز المقر الجديد"},{"n":"فروق تبديل عملات"},{"n":"مصاريف اداره التطوير و التخطيط"},{"n":"مصاريف اداره الموارد البشريه"},{"n":"مصاريف اشتراكات برامج(اودو-سماك)"},{"n":"خصم مسموح به"},{"n":"اقفال مصروفات عموميه و اداريه"}]},{"n":"مصروفات بيعيه و تسويقيه","c":[{"n":"عمولات مبيعات"},{"n":"حملات دعائيه تفاعليه & انفلونسرز"},{"n":"حملات سوشيال ميديا - مموله"},{"n":"باحث ( SEO )"},{"n":"مطبوعات دعايه"},{"n":"هدايا دعائيه"},{"n":"مؤتمرات و ندوات استثمار عقارى"},{"n":"وكاله حفلات و ايفنتات"},{"n":"برنامج ( CRM )"},{"n":"استبيان عملاء و منافسين"},{"n":"مصروفات تدريب و تطوير تسويقى"},{"n":"تصميمات تسويقيه"},{"n":"اقفال مصاريف بيعيه و ترويجيه"},{"n":"اعمال براندينج و تشطيبات داخليه"},{"n":"حملات دعايه خارجيه- يفط و اعلانات خارجيه"},{"n":"اعمال علاقات عامه PR"},{"n":"حملات دعائيه تصوير و انتاج فيديوهات"},{"n":"لينكد ان"},{"n":"خدمات ميلات جوجل"},{"n":"مصاريف نقل وشحن قسم التسويق"},{"n":"مصروفات انفستوميتر","c":[{"n":"مصروفات عوائد انفستوميتر - استثمارى","c":[{"n":"مصروفات عوائد انفستوميتر استثمار - طار ق العراقى_6"},{"n":"مصروفات عوائد انفستوميتر استثمار - الفت نان_1"},{"n":"مصروفات عوائد انفستوميتر استثمار - طار ق عيد _1"},{"n":"مصروفات عوائد انفستوميتر استثمار - محمد المراغي_1"},{"n":"مصروفات عوائد انفستوميتر استثمار - نائل جمال_1"},{"n":"مصروفات عوائد افستوميتر استثمار -شيماء شمس"},{"n":"مصروفات عوائد انفستوميتر استثمار-اشرف صلاح محمود-1"},{"n":"مصروفات عوائد انفستوميتر استثمار - مني احمد حسن"},{"n":"مصروفات عوائد انفستوميتر استثمار - محمود ناصر"},{"n":"مصروفات عوائد انفستوميتر استثمار-محمد طارق العراقي"},{"n":"مصروفات عوائد انفستوميتر استثمار - محمد علام"},{"n":"مصروفات عوائد انفستوميتر استثمار - علاء الدين صابر"},{"n":"مصروفات عوائد انفستوميتر استثمار - محمد فرج محمد"},{"n":"مصروفات عوائد انفستوميتر استثمار - محمود محمد محمد"},{"n":"مصروفات عوائد انفستوميتر استثمار - هناء حمدان"},{"n":"مصروفات عوائد انفستوميتر استثمار - ماريو مجدي"},{"n":"مصروفات عوائد انفستوميتر استثمار - البي السيد"},{"n":"مصروفات عوائد انفستوميتر استثمار - ياسر شكري"},{"n":"مصروفات عوائد انفستوميتر استثمار - عادل السيد عبد"},{"n":"مصروفات عوائد استثمار -عرابي محمد عبد الحميد"},{"n":"مصروفات عوائد انفستوميتر - تملك"}]},{"n":"عملاء انفستوميتر - على عبد الواحد_1"},{"n":"عملاء انفستوميتر - سعد عبد العال_2"},{"n":"عملاء انفستوميتر - عمرو السيد_1"},{"n":"عملاء انفستوميتر - اندرو منير_1"},{"n":"عملاء انفستوميتر - اشرف كمال_2"},{"n":"عملاء انفستوميتر - عبده عبيد_1"},{"n":"عملاء انفستوميتر - ايمن عبيد _1"},{"n":"مصروفات عمولات التسويق - انفستوميتر"},{"n":"اقفال مصروفات انفستوميتر"}]}]}];
+
+// Same normalisation the frontend uses to match an item name with a category text
+function normCat(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه')
+    .replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').trim();
+}
+
 function isValidISODate(s) {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(s + 'T00:00:00Z');
@@ -55,6 +66,13 @@ async function initDb() {
       partner_id INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
       percentage NUMERIC NOT NULL,
       UNIQUE(company_id, partner_id)
+    );
+    CREATE TABLE IF NOT EXISTS expense_items (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES expense_items(id) ON DELETE CASCADE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS company_expenses (
       id SERIAL PRIMARY KEY,
@@ -149,6 +167,33 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+
+  // Seed the default expense items once
+  const itemCount = (await pool.query('SELECT COUNT(*)::int AS c FROM expense_items')).rows[0].c;
+  if (itemCount === 0) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const insertNodes = async (nodes, parentId) => {
+        let order = 0;
+        for (const n of nodes) {
+          const r = await client.query(
+            'INSERT INTO expense_items (name, parent_id, sort_order) VALUES ($1,$2,$3) RETURNING id',
+            [n.n, parentId, order++]
+          );
+          if (n.c) await insertNodes(n.c, r.rows[0].id);
+        }
+      };
+      await insertNodes(DEFAULT_EXPENSE_CHART, null);
+      await client.query('COMMIT');
+      console.log('Seeded default expense items');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('Failed to seed expense items', e);
+    } finally {
+      client.release();
+    }
+  }
 
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM users');
   if (rows[0].c === 0) {
@@ -861,6 +906,191 @@ app.get('/api/report/:projectId', auth, async (req, res) => {
   }));
 
   res.json({ projectId: Number(projectId), revenue, expense, net, partners });
+});
+
+// ---------------------------------------------------------------------------
+// Expense items (chart of expense categories): main items + nested sub-items
+// ---------------------------------------------------------------------------
+async function getExpenseTree() {
+  const { rows } = await pool.query('SELECT id, name, parent_id FROM expense_items ORDER BY sort_order, id');
+  const byParent = {};
+  rows.forEach(r => {
+    const k = r.parent_id == null ? 'root' : String(r.parent_id);
+    (byParent[k] = byParent[k] || []).push(r);
+  });
+  const build = (pid) => (byParent[pid == null ? 'root' : String(pid)] || []).map(r => {
+    const node = { id: r.id, n: r.name };
+    const kids = build(r.id);
+    if (kids.length) node.c = kids;
+    return node;
+  });
+  return build(null);
+}
+
+function cleanItemName(v) {
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+app.get('/api/expense-items', auth, requireAdmin, async (req, res) => {
+  res.json({ tree: await getExpenseTree() });
+});
+
+app.post('/api/expense-items', auth, requireAdmin, async (req, res) => {
+  const name = cleanItemName((req.body || {}).name);
+  const parentId = (req.body || {}).parentId == null ? null : parseInt(req.body.parentId, 10);
+  if (!name) return res.status(400).json({ error: 'اسم البند مطلوب' });
+  if (name.length > 200) return res.status(400).json({ error: 'اسم البند طويل جدًا' });
+  if ((req.body || {}).parentId != null && !parentId) return res.status(400).json({ error: 'البند الرئيسي غير صالح' });
+  try {
+    if (parentId != null) {
+      const p = await pool.query('SELECT 1 FROM expense_items WHERE id=$1', [parentId]);
+      if (!p.rows.length) return res.status(404).json({ error: 'البند الرئيسي غير موجود' });
+    }
+    const all = (await pool.query('SELECT name FROM expense_items')).rows;
+    if (all.some(r => normCat(r.name) === normCat(name))) {
+      return res.status(409).json({ error: 'يوجد بند بنفس الاسم بالفعل' });
+    }
+    const order = (await pool.query(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM expense_items WHERE parent_id IS NOT DISTINCT FROM $1::int',
+      [parentId]
+    )).rows[0].n;
+    const { rows } = await pool.query(
+      'INSERT INTO expense_items (name, parent_id, sort_order) VALUES ($1,$2,$3) RETURNING id, name, parent_id',
+      [name, parentId, order]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('add expense item failed', e);
+    res.status(500).json({ error: 'تعذر إضافة البند: ' + e.message });
+  }
+});
+
+// Rename an item; already-recorded expenses that used the old name follow the new name
+app.put('/api/expense-items/:id', auth, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const name = cleanItemName((req.body || {}).name);
+  if (!id) return res.status(400).json({ error: 'بند غير صالح' });
+  if (!name) return res.status(400).json({ error: 'اسم البند مطلوب' });
+  if (name.length > 200) return res.status(400).json({ error: 'اسم البند طويل جدًا' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = (await client.query('SELECT name FROM expense_items WHERE id=$1', [id])).rows[0];
+    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'البند غير موجود' }); }
+    const others = (await client.query('SELECT name FROM expense_items WHERE id <> $1', [id])).rows;
+    if (others.some(r => normCat(r.name) === normCat(name))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'يوجد بند بنفس الاسم بالفعل' });
+    }
+    await client.query('UPDATE expense_items SET name=$1 WHERE id=$2', [name, id]);
+    const cats = (await client.query(`
+      SELECT category FROM entries WHERE kind='expense' AND category IS NOT NULL
+      UNION SELECT category FROM company_expenses WHERE category IS NOT NULL
+    `)).rows.map(r => r.category).filter(c => normCat(c) === normCat(cur.name));
+    let updated = 0;
+    if (cats.length) {
+      updated += (await client.query(
+        `UPDATE entries SET category=$1 WHERE kind='expense' AND category = ANY($2::text[])`, [name, cats]
+      )).rowCount;
+      updated += (await client.query(
+        `UPDATE company_expenses SET category=$1 WHERE category = ANY($2::text[])`, [name, cats]
+      )).rowCount;
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, updatedRecords: updated });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('rename expense item failed', e);
+    res.status(500).json({ error: 'تعذر تعديل البند: ' + e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Delete an item. Items with sub-items need ?cascade=1. Recorded expenses are kept (they show as unclassified).
+app.delete('/api/expense-items/:id', auth, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: 'بند غير صالح' });
+  const cur = await pool.query('SELECT 1 FROM expense_items WHERE id=$1', [id]);
+  if (!cur.rows.length) return res.status(404).json({ error: 'البند غير موجود' });
+  const kids = (await pool.query('SELECT COUNT(*)::int AS c FROM expense_items WHERE parent_id=$1', [id])).rows[0].c;
+  if (kids > 0 && req.query.cascade !== '1') {
+    return res.status(409).json({ error: 'هذا البند له بنود فرعية. احذفها أولًا أو أكّد حذف الكل.', hasChildren: true });
+  }
+  await pool.query('DELETE FROM expense_items WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Expense analysis: monthly totals per expense item (category), admin only.
+// Combines project expenses (entries) and company-level expenses.
+// scope = all | company:<id> | project:<id>
+// ---------------------------------------------------------------------------
+app.get('/api/reports/expense-analysis', auth, requireAdmin, async (req, res) => {
+  try {
+    const scope = String(req.query.scope || 'all');
+
+    const yearRows = (await pool.query(`
+      SELECT DISTINCT y FROM (
+        SELECT EXTRACT(YEAR FROM entry_date)::int AS y FROM entries WHERE kind='expense'
+        UNION
+        SELECT EXTRACT(YEAR FROM entry_date)::int AS y FROM company_expenses
+      ) t ORDER BY y DESC
+    `)).rows;
+    const years = yearRows.map(r => r.y);
+
+    let year = parseInt(req.query.year, 10);
+    if (!year) year = years.length ? years[0] : new Date().getFullYear();
+
+    const params = [year];
+    let entriesFilter = '';
+    let companyFilter = '';
+    if (scope.startsWith('company:')) {
+      const id = parseInt(scope.slice(8), 10);
+      if (!id) return res.status(400).json({ error: 'نطاق غير صالح' });
+      params.push(id);
+      entriesFilter = ' AND e.project_id IN (SELECT id FROM projects WHERE company_id = $2)';
+      companyFilter = ' AND ce.company_id = $2';
+    } else if (scope.startsWith('project:')) {
+      const id = parseInt(scope.slice(8), 10);
+      if (!id) return res.status(400).json({ error: 'نطاق غير صالح' });
+      params.push(id);
+      entriesFilter = ' AND e.project_id = $2';
+      companyFilter = ' AND FALSE'; // a single project has no company-level expenses
+    } else if (scope !== 'all') {
+      return res.status(400).json({ error: 'نطاق غير صالح' });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT category, m, SUM(total) AS total FROM (
+        SELECT COALESCE(NULLIF(TRIM(e.category), ''), 'أخرى') AS category,
+               EXTRACT(MONTH FROM e.entry_date)::int AS m, SUM(e.amount) AS total
+        FROM entries e
+        WHERE e.kind = 'expense' AND EXTRACT(YEAR FROM e.entry_date)::int = $1::int ${entriesFilter}
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT COALESCE(NULLIF(TRIM(ce.category), ''), 'أخرى') AS category,
+               EXTRACT(MONTH FROM ce.entry_date)::int AS m, SUM(ce.amount) AS total
+        FROM company_expenses ce
+        WHERE EXTRACT(YEAR FROM ce.entry_date)::int = $1::int ${companyFilter}
+        GROUP BY 1, 2
+      ) t
+      GROUP BY category, m
+      ORDER BY category, m
+    `, params);
+
+    const byCat = {};
+    rows.forEach(r => {
+      if (!byCat[r.category]) byCat[r.category] = new Array(12).fill(0);
+      byCat[r.category][r.m - 1] = Number(r.total);
+    });
+    const items = Object.keys(byCat).map(category => ({ category, months: byCat[category] }));
+
+    res.json({ year, scope, years, rows: items, chart: await getExpenseTree() });
+  } catch (e) {
+    console.error('expense analysis failed', e);
+    res.status(500).json({ error: 'تعذر تحميل تحليل المصاريف: ' + e.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

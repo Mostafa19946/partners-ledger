@@ -51,6 +51,21 @@
   .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);color:#cdd6cd;font-size:14px;cursor:pointer;margin-bottom:2px;}
   .nav-item:hover{background:rgba(255,255,255,.06);}
   .nav-item.active{background:rgba(179,129,47,.85);color:#fff;font-weight:700;}
+  .ea-wrap{overflow:auto;max-height:72vh;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper-raised);}
+  .ea-table{border-collapse:separate;border-spacing:0;font-size:12.5px;min-width:1300px;width:100%;}
+  .ea-table th,.ea-table td{padding:7px 10px;white-space:nowrap;border-bottom:1px solid #ece6d4;}
+  .ea-table thead th{position:sticky;top:0;background:var(--teal);color:#fff;z-index:3;text-align:center;font-size:12px;}
+  .ea-table thead th:first-child{right:0;z-index:4;text-align:right;}
+  .ea-table td:first-child{position:sticky;right:0;z-index:2;background:var(--paper-raised);min-width:270px;max-width:360px;white-space:normal;}
+  .ea-table td.num{text-align:left;direction:ltr;font-family:'IBM Plex Mono',monospace;}
+  .ea-table td.tot{font-weight:800;background:#f6f1e2;}
+  .ea-table .ea-zero{color:#b9b19a;}
+  .ea-g0 td,.ea-g0 td:first-child{background:#e3dac0;font-weight:800;}
+  .ea-g1 td,.ea-g1 td:first-child{background:#eee6d0;font-weight:700;}
+  .ea-g2 td,.ea-g2 td:first-child{background:#f5efdd;font-weight:700;}
+  .ea-g3 td,.ea-g3 td:first-child{background:#faf6ea;font-weight:600;}
+  .ea-grand td,.ea-grand td:first-child{background:var(--teal-deep);color:#fff;font-weight:900;}
+  .ea-grand .ea-zero{color:#8fa9a3;}
   .nav-item.sub{margin-right:22px;padding:8px 12px;font-size:13px;border-right:2px solid rgba(255,255,255,.18);border-radius:0 var(--radius) var(--radius) 0;}
   .sidebar-foot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px;}
   .logout-link{color:#e2bdb8;font-size:13px;cursor:pointer;background:none;border:none;font-family:inherit;padding:0;text-align:right;}
@@ -134,12 +149,99 @@
   var partnerActiveProject = null;
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
-    companyExpenses:{}, companyReports:{} };
+    companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[] };
   var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
-    analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null };
+    analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
+    eaScope:'all', eaYear:null, eaShowZero:false };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','شراء أصول','مصاريف دعاية وتسويق','أخرى'];
+
+  // ---- Expense items tree helpers ----
+  function eiCount(nodes){ return (nodes||[]).reduce(function(t,n){ return t+1+eiCount(n.c); },0); }
+  function eiFind(nodes, id){
+    for(var i=0;i<(nodes||[]).length;i++){
+      if(nodes[i].id===id) return nodes[i];
+      var f = eiFind(nodes[i].c, id); if(f) return f;
+    }
+    return null;
+  }
+  // <option> list for expense forms: groups are shown as disabled headers, only real items can be chosen
+  function expenseItemOptions(fallback){
+    var tree = cache.expenseItems || [];
+    if(!tree.length) return fallback.map(function(c){ return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>'; }).join('');
+    var out = [];
+    (function walk(nodes, depth){
+      nodes.forEach(function(n){
+        var pad = new Array(depth*2+1).join('\u00A0');
+        if(n.c && n.c.length){
+          out.push('<option disabled>'+pad+'▸ '+escapeHtml(n.n)+'</option>');
+          walk(n.c, depth+1);
+        } else {
+          out.push('<option value="'+escapeHtml(n.n)+'">'+pad+escapeHtml(n.n)+'</option>');
+        }
+      });
+    })(tree, 0);
+    return out.join('');
+  }
+
+  // EA-BEGIN (expense analysis: chart of items + pure calculation, no DOM)
+  var EA_MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+  function normCat(s){
+    return String(s==null?'':s)
+      .replace(/[\u064B-\u065F\u0670\u0640]/g,'')
+      .replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه')
+      .replace(/\s*-\s*/g,'-').replace(/\s+/g,' ').trim();
+  }
+  function eaZeros(){ return [0,0,0,0,0,0,0,0,0,0,0,0]; }
+  function eaAdd(a,b){ return a.map(function(v,i){ return v+(b[i]||0); }); }
+  function eaSum(a){ return a.reduce(function(t,v){ return t+v; },0); }
+  function eaIsZero(months){ return months.every(function(v){ return Math.abs(v)<0.005; }); }
+  function eaBuildRows(data, chart, showZero){
+    var byNorm = {};
+    (data.rows||[]).forEach(function(r){
+      var k = normCat(r.category);
+      if(!byNorm[k]) byNorm[k] = {name:r.category, months:eaZeros(), used:false};
+      byNorm[k].months = eaAdd(byNorm[k].months, r.months);
+    });
+    function calc(node){
+      var own = byNorm[normCat(node.n)];
+      var ownMonths = own ? own.months : null;
+      if(own) own.used = true;
+      if(!node.c || !node.c.length) return {name:node.n, leaf:true, months: ownMonths || eaZeros()};
+      var kids = node.c.map(calc);
+      var months = eaZeros();
+      kids.forEach(function(k){ months = eaAdd(months, k.months); });
+      if(ownMonths) months = eaAdd(months, ownMonths);
+      return {name:node.n, leaf:false, months:months, kids:kids, own:ownMonths};
+    }
+    var roots = chart.map(calc);
+    var extra = [];
+    Object.keys(byNorm).forEach(function(k){
+      if(!byNorm[k].used) extra.push({name:byNorm[k].name, leaf:true, months:byNorm[k].months});
+    });
+    if(extra.length){
+      extra.sort(function(a,b){ return eaSum(b.months)-eaSum(a.months); });
+      var em = eaZeros();
+      extra.forEach(function(x){ em = eaAdd(em, x.months); });
+      roots.push({name:'بنود أخرى غير مصنفة', leaf:false, months:em, kids:extra, own:null});
+    }
+    var out = [];
+    function flatten(node, depth){
+      if(!showZero && eaIsZero(node.months)) return;
+      out.push({name:node.name, depth:depth, isGroup:!node.leaf, months:node.months, total:eaSum(node.months)});
+      if(!node.leaf){
+        if(node.own && (showZero || !eaIsZero(node.own)))
+          out.push({name:node.name+' (مباشر)', depth:depth+1, isGroup:false, months:node.own, total:eaSum(node.own)});
+        node.kids.forEach(function(k){ flatten(k, depth+1); });
+      }
+    }
+    roots.forEach(function(r){ flatten(r, 0); });
+    var grand = eaZeros();
+    roots.forEach(function(r){ grand = eaAdd(grand, r.months); });
+    return {rows:out, grand:{months:grand, total:eaSum(grand)}};
+  }
+  // EA-END
 
   function pad2(n){ return n<10 ? '0'+n : ''+n; }
   function periodKeyLabel(dateStr, period){
@@ -396,6 +498,8 @@
     {key:'projects', label:'المشاريع', icon:'📁', sub:true},
     {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
     {key:'analytics', label:'تحليل الفترات', icon:'📈'},
+    {key:'expenseAnalysis', label:'تحليل المصاريف', icon:'🧾'},
+    {key:'expenseItems', label:'بنود المصاريف', icon:'🗂️'},
     {key:'inventory', label:'المخزون والتحصيل', icon:'📦'},
     {key:'current', label:'الحساب الجاري', icon:'💳'},
     {key:'report', label:'تقرير مشروع', icon:'📊'},
@@ -438,6 +542,8 @@
     else if(adminTab==='projects') main.innerHTML = pageProjects();
     else if(adminTab==='entries') main.innerHTML = pageEntries();
     else if(adminTab==='analytics') main.innerHTML = pageAnalytics();
+    else if(adminTab==='expenseAnalysis') main.innerHTML = pageExpenseAnalysis();
+    else if(adminTab==='expenseItems') main.innerHTML = pageExpenseItems();
     else if(adminTab==='inventory') main.innerHTML = pageInventory();
     else if(adminTab==='current') main.innerHTML = pageCurrentAccount();
     else if(adminTab==='report') main.innerHTML = pageReport();
@@ -456,6 +562,7 @@
       var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', current:'caProjectId', report:'reportProjectId'};
       tabKey = adminTab + ':' + (uiState[pidMap[adminTab]] || (cache.projects[0] && cache.projects[0].id) || '');
     }
+    if(adminTab==='expenseAnalysis') tabKey = adminTab+':'+uiState.eaScope+':'+(uiState.eaYear||'');
     if(!force && loadedTabs[tabKey]){ renderAdminMain(); return; }
     main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
     try{
@@ -463,7 +570,7 @@
       else if(adminTab==='companies'){
         var coRes = await Promise.all([api('GET','/partners'), api('GET','/companies')]);
         cache.partners = coRes[0]; cache.companies = coRes[1];
-        var extraCalls = [];
+        var extraCalls = [api('GET','/expense-items').then(function(r){ cache.expenseItems = r.tree; })];
         cache.companies.forEach(function(co){
           extraCalls.push(api('GET','/companies/'+co.id+'/expenses').then(function(r){ cache.companyExpenses[co.id]=r; }));
           extraCalls.push(api('GET','/companies/'+co.id+'/report').then(function(r){ cache.companyReports[co.id]=r; }));
@@ -481,11 +588,27 @@
           var epid = uiState.entriesProjectId;
           var enRes = await Promise.all([
             api('GET','/entries?projectId='+epid),
-            api('GET','/expense-payments?projectId='+epid)
+            api('GET','/expense-payments?projectId='+epid),
+            api('GET','/expense-items')
           ]);
           cache.entries[epid] = enRes[0];
           cache.expensePayments[epid] = enRes[1];
+          cache.expenseItems = enRes[2].tree;
         }
+      }
+      else if(adminTab==='expenseItems'){
+        cache.expenseItems = (await api('GET','/expense-items')).tree;
+      }
+      else if(adminTab==='expenseAnalysis'){
+        var eaRes = await Promise.all([
+          cache.projects.length ? Promise.resolve(cache.projects) : api('GET','/projects'),
+          cache.companies.length ? Promise.resolve(cache.companies) : api('GET','/companies'),
+          api('GET','/reports/expense-analysis?scope='+encodeURIComponent(uiState.eaScope)+(uiState.eaYear?'&year='+uiState.eaYear:''))
+        ]);
+        cache.projects = eaRes[0]; cache.companies = eaRes[1];
+        uiState.eaYear = eaRes[2].year;
+        cache.eaData[uiState.eaScope+'|'+uiState.eaYear] = eaRes[2];
+        tabKey = adminTab+':'+uiState.eaScope+':'+uiState.eaYear;
       }
       else if(adminTab==='analytics'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
@@ -642,7 +765,7 @@
           '<td><button class="del-x" data-del-co-exp="'+co.id+'" data-co-exp-id="'+e.id+'">✕</button></td></tr>';
       }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف عمومية مسجلة بعد</td></tr>';
 
-      var catOptions = COMPANY_EXPENSE_CATEGORIES.map(function(c){return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>';}).join('');
+      var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
 
       var projectRows = rep ? rep.projects.map(function(p){
         return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt credit">'+money(p.revenue)+'</td><td class="amt debit">'+money(p.expense)+'</td>'+
@@ -775,7 +898,7 @@
     var paidByEntry = {};
     payments.forEach(function(p){ paidByEntry[p.entry_id] = (paidByEntry[p.entry_id]||0) + Number(p.amount); });
 
-    var catOptions = EXPENSE_CATEGORIES.map(function(c){return '<option value="'+escapeHtml(c)+'">'+escapeHtml(c)+'</option>';}).join('');
+    var catOptions = expenseItemOptions(EXPENSE_CATEGORIES);
 
     var rows = list.map(function(e){
       var extra = '';
@@ -1136,6 +1259,126 @@
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>'+
     importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة (وأعمدة اختيارية: الحالة، مساحة الوحدة، مساحة الجاردن)');
+  }
+
+  function eaScopeLabel(scope){
+    if(scope.indexOf('company:')===0){
+      var c = cache.companies.find(function(x){ return 'company:'+x.id===scope; });
+      return 'شركة: '+(c?c.name:'');
+    }
+    if(scope.indexOf('project:')===0){
+      var p = cache.projects.find(function(x){ return 'project:'+x.id===scope; });
+      return 'مشروع: '+(p?p.name:'');
+    }
+    return 'كل الشركات والمشاريع';
+  }
+  function eaCurrent(){ return cache.eaData[uiState.eaScope+'|'+uiState.eaYear] || null; }
+  function eaNum(v){ return Math.abs(v)<0.005 ? '<span class="ea-zero">—</span>' : money(v); }
+
+  function pageExpenseAnalysis(){
+    var data = eaCurrent();
+    if(!data) return '<div class="empty">جارِ التحميل…</div>';
+    var built = eaBuildRows(data, data.chart || [], uiState.eaShowZero);
+
+    var scopeOpts = '<option value="all"'+(uiState.eaScope==='all'?' selected':'')+'>كل الشركات والمشاريع</option>';
+    if(cache.companies.length){
+      scopeOpts += '<optgroup label="شركة">'+cache.companies.map(function(c){
+        var v='company:'+c.id; return '<option value="'+v+'"'+(uiState.eaScope===v?' selected':'')+'>'+escapeHtml(c.name)+'</option>';
+      }).join('')+'</optgroup>';
+    }
+    if(cache.projects.length){
+      scopeOpts += '<optgroup label="مشروع">'+cache.projects.map(function(p){
+        var v='project:'+p.id; return '<option value="'+v+'"'+(uiState.eaScope===v?' selected':'')+'>'+escapeHtml(p.name)+'</option>';
+      }).join('')+'</optgroup>';
+    }
+    var years = (data.years||[]).slice();
+    if(years.indexOf(data.year)<0) years.push(data.year);
+    years.sort(function(a,b){ return b-a; });
+    var yearOpts = years.map(function(y){ return '<option value="'+y+'"'+(y===data.year?' selected':'')+'>'+y+'</option>'; }).join('');
+
+    var head = '<tr><th>اسم البند</th>'+EA_MONTHS.map(function(m){ return '<th>'+m+'</th>'; }).join('')+'<th>الإجمالي</th></tr>';
+    var body = built.rows.map(function(r){
+      var cls = r.isGroup ? 'ea-g'+Math.min(r.depth,3) : '';
+      var cells = r.months.map(function(v){ return '<td class="num">'+eaNum(v)+'</td>'; }).join('');
+      return '<tr class="'+cls+'"><td style="padding-right:'+(12+r.depth*18)+'px;">'+escapeHtml(r.name)+'</td>'+cells+'<td class="num tot">'+eaNum(r.total)+'</td></tr>';
+    }).join('');
+    var grandCells = built.grand.months.map(function(v){ return '<td class="num">'+eaNum(v)+'</td>'; }).join('');
+    var grandRow = '<tr class="ea-grand"><td>المجموع الكلي</td>'+grandCells+'<td class="num">'+eaNum(built.grand.total)+'</td></tr>';
+
+    return '<div class="page-head"><h2>تحليل المصاريف</h2><p>بنود المصاريف وإجمالي كل شهر فقط، بدون تفاصيل العمليات.</p></div>'+
+    '<div class="panel"><div class="panel-body">'+
+      '<div class="form-row three" style="align-items:end;">'+
+        '<div class="field"><label>النطاق</label><select id="ea-scope">'+scopeOpts+'</select></div>'+
+        '<div class="field"><label>السنة</label><select id="ea-year">'+yearOpts+'</select></div>'+
+        '<div class="field"><label style="display:flex;align-items:center;gap:8px;font-weight:500;"><input type="checkbox" id="ea-show-zero"'+(uiState.eaShowZero?' checked':'')+' style="width:auto;"> إظهار البنود الصفرية</label>'+
+          '<button class="btn brass sm" id="ea-export" type="button" style="margin-top:8px;">⬇ تصدير إكسيل</button></div>'+
+      '</div>'+
+    '</div></div>'+
+    '<div class="muted-note" style="margin-bottom:10px;">'+escapeHtml(eaScopeLabel(uiState.eaScope))+' — تحليل المصاريف: يناير-'+data.year+' الى ديسمبر-'+data.year+'</div>'+
+    (built.rows.length ? '' : '<div class="panel"><div class="empty">لا توجد مصاريف مسجلة في '+data.year+' لهذا النطاق.</div></div>')+
+    '<div class="ea-wrap"><table class="ea-table"><thead>'+head+'</thead><tbody>'+body+grandRow+'</tbody></table></div>';
+  }
+
+  function exportExpenseAnalysis(){
+    var data = eaCurrent();
+    if(!data) return;
+    if(typeof XLSX==='undefined'){ alert('مكتبة الإكسيل لم تُحمّل، حدّث الصفحة وحاول تاني'); return; }
+    var built = eaBuildRows(data, data.chart || [], uiState.eaShowZero);
+    var r2 = function(v){ return Math.round(v*100)/100; };
+    var aoa = [
+      ['تحليل المصاريف'],
+      [eaScopeLabel(uiState.eaScope)],
+      ['تحليل المصاريف : يناير-'+data.year+' الى ديسمبر-'+data.year],
+      [],
+      ['اسم البند'].concat(EA_MONTHS, ['الإجمالي'])
+    ];
+    built.rows.forEach(function(r){
+      aoa.push([new Array(r.depth*3+1).join(' ')+r.name].concat(r.months.map(r2), [r2(r.total)]));
+    });
+    aoa.push(['المجموع الكلي'].concat(built.grand.months.map(r2), [r2(built.grand.total)]));
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    Object.keys(ws).forEach(function(addr){
+      if(addr.charAt(0)==='!') return;
+      if(ws[addr].t==='n') ws[addr].z = '#,##0.00';
+    });
+    ws['!cols'] = [{wch:50}].concat(EA_MONTHS.map(function(){ return {wch:14}; }), [{wch:16}]);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'تحليل المصاريف');
+    wb.Workbook = {Views:[{RTL:true}]};
+    XLSX.writeFile(wb, 'تحليل_المصاريف_'+data.year+'.xlsx');
+  }
+
+  function pageExpenseItems(){
+    var tree = cache.expenseItems || [];
+    var rows = [];
+    (function walk(nodes, depth){
+      nodes.forEach(function(n){
+        var isGroup = !!(n.c && n.c.length);
+        rows.push('<tr class="ei-row'+(depth===0?' ei-root':'')+'" data-name="'+escapeHtml(n.n)+'">'+
+          '<td style="padding-right:'+(12+depth*22)+'px;'+(isGroup?'font-weight:700;':'')+'">'+
+            (depth>0?'<span style="color:var(--ink-soft);">└ </span>':'')+escapeHtml(n.n)+
+            (isGroup?' <span class="muted-note" style="display:inline;">('+n.c.length+')</span>':'')+'</td>'+
+          '<td style="white-space:nowrap;text-align:left;">'+
+            '<button class="btn ghost sm" type="button" data-ei-add="'+n.id+'">＋ بند فرعي</button> '+
+            '<button class="btn ghost sm" type="button" data-ei-rename="'+n.id+'">تعديل الاسم</button> '+
+            '<button class="btn danger sm" type="button" data-ei-del="'+n.id+'">حذف</button>'+
+          '</td></tr>');
+        if(isGroup) walk(n.c, depth+1);
+      });
+    })(tree, 0);
+    return '<div class="page-head"><h2>بنود المصاريف</h2><p>أضف بندًا رئيسيًا، أو بندًا فرعيًا تحت أي بند. البنود دي هي اللي بتظهر عند تسجيل المصروف وفي تقرير تحليل المصاريف.</p></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة بند رئيسي</h3></div><div class="panel-body">'+
+      '<form id="ei-add-root-form" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">'+
+        '<div class="field" style="flex:1;min-width:240px;margin:0;"><label>اسم البند الرئيسي</label><input type="text" id="ei-root-name" required></div>'+
+        '<button class="btn" type="submit">إضافة</button>'+
+      '</form>'+
+      '<div class="muted-note" style="margin-top:8px;">لإضافة بند فرعي اضغط "＋ بند فرعي" جنب البند اللي عايز تضيف تحته. أي مصروف مسجل بالفعل على بند بتغيّر اسمه بيتحدّث تلقائيًا.</div>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>شجرة البنود ('+eiCount(tree)+')</h3>'+
+      '<input type="text" id="ei-filter" placeholder="بحث في البنود…" style="max-width:240px;"></div>'+
+      '<div class="panel-body" style="padding:0;overflow-x:auto;">'+
+        (rows.length ? '<table><tbody>'+rows.join('')+'</tbody></table>' : '<div class="empty">لا توجد بنود بعد. أضف أول بند رئيسي من النموذج بالأعلى.</div>')+
+      '</div></div>';
   }
 
   function pageSettings(){
@@ -1511,6 +1754,66 @@
       ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة','مساحة الوحدة','مساحة الجاردن'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح','','']);
     bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
       ['التاريخ','اسم الشريك','النوع','المبلغ','البيان'], ['2026-01-10','محمد أحمد','إيداع',5000,'إيداع نقدي في حساب المشروع']);
+
+    var eiRootForm = document.getElementById('ei-add-root-form');
+    if(eiRootForm) eiRootForm.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var name = document.getElementById('ei-root-name').value.trim();
+      if(!name) return;
+      try{ await api('POST','/expense-items',{name:name, parentId:null}); invalidateAndReload(); }
+      catch(e){ alert(e.message); }
+    });
+    document.querySelectorAll('[data-ei-add]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var pid = Number(btn.getAttribute('data-ei-add'));
+        var parent = eiFind(cache.expenseItems, pid);
+        var name = prompt('اسم البند الفرعي الجديد تحت «'+(parent?parent.n:'')+'»:');
+        if(name===null) return;
+        name = name.trim(); if(!name) return;
+        try{ await api('POST','/expense-items',{name:name, parentId:pid}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-ei-rename]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var id = Number(btn.getAttribute('data-ei-rename'));
+        var node = eiFind(cache.expenseItems, id);
+        var name = prompt('الاسم الجديد للبند:', node?node.n:'');
+        if(name===null) return;
+        name = name.trim(); if(!name || (node && name===node.n)) return;
+        try{ await api('PUT','/expense-items/'+id,{name:name}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-ei-del]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var id = Number(btn.getAttribute('data-ei-del'));
+        var node = eiFind(cache.expenseItems, id);
+        var subCount = node ? eiCount(node.c) : 0;
+        var msg = subCount
+          ? 'حذف «'+node.n+'» وكل بنوده الفرعية ('+subCount+')؟\nالمصروفات المسجلة عليها هتفضل محفوظة لكن هتظهر في "بنود أخرى غير مصنفة".'
+          : 'حذف البند «'+(node?node.n:'')+'»؟\nالمصروفات المسجلة عليه هتفضل محفوظة لكن هتظهر في "بنود أخرى غير مصنفة".';
+        if(!confirm(msg)) return;
+        try{ await api('DELETE','/expense-items/'+id+(subCount?'?cascade=1':'')); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    var eiFilter = document.getElementById('ei-filter');
+    if(eiFilter) eiFilter.addEventListener('input', function(){
+      var q = normCat(eiFilter.value);
+      document.querySelectorAll('.ei-row').forEach(function(tr){
+        tr.style.display = (!q || normCat(tr.getAttribute('data-name')).indexOf(q)>=0) ? '' : 'none';
+      });
+    });
+
+    var eaScopeEl = document.getElementById('ea-scope');
+    if(eaScopeEl) eaScopeEl.addEventListener('change', function(){ uiState.eaScope = eaScopeEl.value; loadAdminPage(); });
+    var eaYearEl = document.getElementById('ea-year');
+    if(eaYearEl) eaYearEl.addEventListener('change', function(){ uiState.eaYear = Number(eaYearEl.value); loadAdminPage(); });
+    var eaZeroEl = document.getElementById('ea-show-zero');
+    if(eaZeroEl) eaZeroEl.addEventListener('change', function(){ uiState.eaShowZero = eaZeroEl.checked; renderAdminMain(); });
+    var eaExportEl = document.getElementById('ea-export');
+    if(eaExportEl) eaExportEl.addEventListener('click', exportExpenseAnalysis);
 
     bindSelectableTable('entries', '/entries/bulk-delete');
     bindSelectableTable('current-account', '/current-account/bulk-delete');
