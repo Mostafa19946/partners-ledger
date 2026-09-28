@@ -308,7 +308,7 @@
       var reader = new FileReader();
       reader.onload = function(e){
         try{
-          var wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
+          var wb = XLSX.read(new Uint8Array(e.target.result), {type:'array', cellDates:true});
           var sheet = wb.Sheets[wb.SheetNames[0]];
           var rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
           resolve(rows);
@@ -327,19 +327,19 @@
       '<button class="btn brass" id="'+idPrefix+'-confirm" style="display:none;margin-top:10px;">تأكيد الاستيراد</button>'+
     '</div></div>';
   }
-  function downloadExcelTemplate(filename, sheetName, headers, exampleRow){
+  function downloadExcelTemplate(filename, sheetName, headers, exampleRow, widths){
     if(typeof XLSX === 'undefined'){ alert('مكتبة الإكسيل لم تُحمّل، حدّث الصفحة وحاول تاني'); return; }
     var aoa = [headers, exampleRow];
     var ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = headers.map(function(){ return {wch:20}; });
+    ws['!cols'] = (widths || headers.map(function(){ return 20; })).map(function(w){ return {wch:w}; });
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
     XLSX.writeFile(wb, filename);
   }
-  function bindTemplateButton(idPrefix, filename, sheetName, headers, exampleRow){
+  function bindTemplateButton(idPrefix, filename, sheetName, headers, exampleRow, widths){
     var btn = document.getElementById(idPrefix+'-template');
     if(!btn) return;
-    btn.addEventListener('click', function(){ downloadExcelTemplate(filename, sheetName, headers, exampleRow); });
+    btn.addEventListener('click', function(){ downloadExcelTemplate(filename, sheetName, headers, exampleRow, widths); });
   }
   function bindImportPanel(idPrefix, mapRow, requiredCols, onConfirm){
     var fileInput = document.getElementById(idPrefix+'-file');
@@ -387,13 +387,13 @@
   function mapRevenueRow(r){
     var date = excelToISODate(r['التاريخ']);
     var amount = excelToNumber(r['المبلغ']);
-    if(!date || !amount || isNaN(amount) || amount<=0) return null;
+    if(!date || !amount || isNaN(amount)) return null;
     return {date:date, description:String(r['البيان']||'').trim(), amount:amount};
   }
   function mapExpenseRow(r){
     var date = excelToISODate(r['التاريخ']);
     var amount = excelToNumber(r['المبلغ']);
-    if(!date || !amount || isNaN(amount) || amount<=0) return null;
+    if(!date || !amount || isNaN(amount)) return null;
     return {date:date, description:String(r['البيان']||'').trim(), amount:amount, category:String(r['التصنيف']||'أخرى').trim()};
   }
   function mapInventoryRow(r){
@@ -936,8 +936,8 @@
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('entries')+'</div>'+
       '<table><thead><tr>'+selectColHeader('entries')+'<th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
-    importPanelHtml('import-rev', 'استيراد الإيرادات من إكسيل', 'التاريخ، البيان، المبلغ')+
-    importPanelHtml('import-exp', 'استيراد المصروفات من إكسيل', 'التاريخ، البيان، المبلغ، التصنيف');
+    importPanelHtml('import-rev', 'استيراد الإيرادات من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، المبلغ')+
+    importPanelHtml('import-exp', 'استيراد المصروفات من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، المبلغ، التصنيف (اسم البند زي ما هو في صفحة «بنود المصاريف»). المبالغ السالبة زي الاستردادات بتتسجل بالسالب.');
   }
 
   function pageCurrentAccount(){
@@ -1747,9 +1747,9 @@
     });
 
     bindTemplateButton('import-rev', 'نموذج_استيراد_الإيرادات.xlsx', 'الإيرادات',
-      ['التاريخ','البيان','المبلغ'], ['2026-01-15','دفعة من العميل أحمد',15000]);
+      ['التاريخ','البيان','المبلغ'], ['31/07/2025','دفعة من العميل أحمد',15000], [21,66,21]);
     bindTemplateButton('import-exp', 'نموذج_استيراد_المصروفات.xlsx', 'المصروفات',
-      ['التاريخ','البيان','المبلغ','التصنيف'], ['2026-01-15','إيجار المخزن شهر يناير',3000,'إيجار']);
+      ['التاريخ','البيان','المبلغ','التصنيف'], ['31/07/2025','تحويل دفعة من قسط تخصيص الأرض',1000000,'ارض المشروع - قيمه العقد'], [21,66,21,42]);
     bindTemplateButton('import-inv', 'نموذج_استيراد_المخزون.xlsx', 'المخزون',
       ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة','مساحة الوحدة','مساحة الجاردن'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح','','']);
     bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
