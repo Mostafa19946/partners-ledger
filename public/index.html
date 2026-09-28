@@ -51,6 +51,7 @@
   .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);color:#cdd6cd;font-size:14px;cursor:pointer;margin-bottom:2px;}
   .nav-item:hover{background:rgba(255,255,255,.06);}
   .nav-item.active{background:rgba(179,129,47,.85);color:#fff;font-weight:700;}
+  .nav-item.sub{margin-right:22px;padding:8px 12px;font-size:13px;border-right:2px solid rgba(255,255,255,.18);border-radius:0 var(--radius) var(--radius) 0;}
   .sidebar-foot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px;}
   .logout-link{color:#e2bdb8;font-size:13px;cursor:pointer;background:none;border:none;font-family:inherit;padding:0;text-align:right;}
   .logout-link:hover{text-decoration:underline;}
@@ -129,7 +130,7 @@
   var token = localStorage.getItem('pl_token') || null;
   var currentUser = JSON.parse(localStorage.getItem('pl_user') || 'null');
   var loginError = "";
-  var adminTab = 'partners';
+  var adminTab = 'companies';
   var partnerActiveProject = null;
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
@@ -380,7 +381,7 @@
       try{
         var data = await api('POST','/login',{username:u,password:p});
         token = data.token; currentUser = data.user; saveSession();
-        loginError = ""; adminTab='partners'; partnerActiveProject=null;
+        loginError = ""; adminTab='companies'; partnerActiveProject=null;
         render();
       }catch(e){
         loginError = e.message; render();
@@ -390,9 +391,9 @@
 
   // ================= ADMIN =================
   var adminNav = [
-    {key:'partners', label:'الشركاء', icon:'👥'},
     {key:'companies', label:'الشركات', icon:'🏢'},
-    {key:'projects', label:'المشاريع', icon:'📁'},
+    {key:'partners', label:'الشركاء', icon:'👥', sub:true},
+    {key:'projects', label:'المشاريع', icon:'📁', sub:true},
     {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
     {key:'analytics', label:'تحليل الفترات', icon:'📈'},
     {key:'inventory', label:'المخزون والتحصيل', icon:'📦'},
@@ -403,7 +404,7 @@
 
   function renderAdminShell(){
     var nav = adminNav.map(function(n){
-      return '<div class="nav-item'+(adminTab===n.key?' active':'')+'" data-nav="'+n.key+'"><span>'+n.icon+'</span><span>'+n.label+'</span></div>';
+      return '<div class="nav-item'+(n.sub?' sub':'')+(adminTab===n.key?' active':'')+'" data-nav="'+n.key+'"><span>'+n.icon+'</span><span>'+n.label+'</span></div>';
     }).join('');
     return '<div class="shell"><div class="sidebar">'+
       '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
