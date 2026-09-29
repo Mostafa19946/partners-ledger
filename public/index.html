@@ -149,10 +149,10 @@
   var partnerActiveProject = null;
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
-    companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[] };
+    companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{} };
   var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
-    eaScope:'all', eaYear:null, eaShowZero:false };
+    eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','شراء أصول','مصاريف دعاية وتسويق','أخرى'];
@@ -608,6 +608,7 @@
         cache.projects = eaRes[0]; cache.companies = eaRes[1];
         uiState.eaYear = eaRes[2].year;
         cache.eaData[uiState.eaScope+'|'+uiState.eaYear] = eaRes[2];
+        cache.eaLedger[uiState.eaScope+'|'+uiState.eaYear] = await api('GET','/reports/expense-ledger?scope='+encodeURIComponent(uiState.eaScope)+'&year='+uiState.eaYear);
         tabKey = adminTab+':'+uiState.eaScope+':'+uiState.eaYear;
       }
       else if(adminTab==='analytics'){
@@ -641,6 +642,17 @@
         if(cache.projects.length){
           if(!uiState.caProjectId) uiState.caProjectId = cache.projects[0].id;
           cache.currentAccount[uiState.caProjectId] = await api('GET','/current-account?projectId='+uiState.caProjectId);
+          var caProjForLedger = cache.projects.find(function(p){ return p.id===uiState.caProjectId; });
+          var caPartners = caProjForLedger ? caProjForLedger.partners : [];
+          if(caPartners.length && (!uiState.caLedgerPartnerId || !caPartners.some(function(p){ return p.partnerId===uiState.caLedgerPartnerId; }))){
+            uiState.caLedgerPartnerId = caPartners[0].partnerId;
+          }
+          if(uiState.caLedgerPartnerId){
+            var ledUrl = '/current-account/ledger?projectId='+uiState.caProjectId+'&partnerId='+uiState.caLedgerPartnerId+(uiState.caLedgerYear?'&year='+uiState.caLedgerYear:'');
+            var ledRes = await api('GET', ledUrl);
+            uiState.caLedgerYear = ledRes.year;
+            cache.caLedger[uiState.caProjectId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] = ledRes;
+          }
         }
       }
       else if(adminTab==='report'){
@@ -992,7 +1004,34 @@
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
-    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، النوع، المبلغ، البيان — والنوع يُكتب بالظبط: إيداع أو سحب أو توزيع أرباح');
+    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، النوع، المبلغ، البيان — والنوع يُكتب بالظبط: إيداع أو سحب أو توزيع أرباح')+
+    pageCurrentAccountLedger(partnersInProject);
+  }
+
+  function pageCurrentAccountLedger(partnersInProject){
+    if(!partnersInProject.length) return '';
+    var partnerOpts = partnersInProject.map(function(p){
+      return '<option value="'+p.partnerId+'"'+(p.partnerId===uiState.caLedgerPartnerId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';
+    }).join('');
+    var led = cache.caLedger[uiState.caProjectId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] || null;
+    var years = led ? (led.years||[]).slice() : [];
+    if(led && years.indexOf(led.year)<0) years.push(led.year);
+    years.sort(function(a,b){ return b-a; });
+    var yearOpts = years.map(function(y){ return '<option value="'+y+'"'+(led && y===led.year?' selected':'')+'>'+y+'</option>'; }).join('');
+
+    return '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">كشف الحساب الشهري (مدين / دائن / رصيد)</h2></div>'+
+    '<div class="panel"><div class="panel-body">'+
+      '<div class="form-row" style="align-items:end;">'+
+        '<div class="field"><label>الشريك</label><select id="ca-ledger-partner">'+partnerOpts+'</select></div>'+
+        '<div class="field"><label>السنة</label><select id="ca-ledger-year">'+yearOpts+'</select></div>'+
+      '</div>'+
+    '</div></div>'+
+    (led ? ledgerTableHtml({
+      title:'كشف حساب '+(partnersInProject.find(function(p){return p.partnerId===uiState.caLedgerPartnerId;})||{}).name,
+      year:led.year, months:led.months, openingBalance:led.openingBalanceYear, closingBalance:led.closingBalanceYear,
+      debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
+      openingLabel:'رصيد أول '+led.year, closingLabel:'رصيد آخر '+led.year
+    }) : '<div class="panel"><div class="empty">جارِ التحميل…</div></div>');
   }
 
   function pageReport(){
@@ -1274,10 +1313,26 @@
   }
   function eaCurrent(){ return cache.eaData[uiState.eaScope+'|'+uiState.eaYear] || null; }
   function eaNum(v){ return Math.abs(v)<0.005 ? '<span class="ea-zero">—</span>' : money(v); }
+  function ledgerTableHtml(opts){
+    var rows = opts.months.map(function(mo){
+      return '<tr><td>'+EA_MONTHS[mo.month-1]+' '+opts.year+'</td>'+
+        '<td class="amt debit">'+eaNum(mo.debit)+'</td>'+
+        '<td class="amt credit">'+eaNum(mo.credit)+'</td>'+
+        '<td class="amt '+(mo.balance>=0?'credit':'debit')+'">'+money(mo.balance)+'</td></tr>';
+    }).join('');
+    return '<div class="panel"><div class="panel-head"><h3>'+opts.title+'</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>الشهر</th><th>'+opts.debitLabel+'</th><th>'+opts.creditLabel+'</th><th>الرصيد آخر الشهر</th></tr></thead><tbody>'+
+        '<tr style="background:#f2ecdb;font-weight:700;"><td colspan="3">'+opts.openingLabel+'</td><td class="amt">'+money(opts.openingBalance)+'</td></tr>'+
+        rows+
+        '<tr class="ea-grand"><td colspan="3">'+opts.closingLabel+'</td><td class="amt">'+money(opts.closingBalance)+'</td></tr>'+
+      '</tbody></table>'+
+    '</div></div>';
+  }
 
   function pageExpenseAnalysis(){
     var data = eaCurrent();
     if(!data) return '<div class="empty">جارِ التحميل…</div>';
+    var eaLed = cache.eaLedger[uiState.eaScope+'|'+uiState.eaYear] || null;
     var built = eaBuildRows(data, data.chart || [], uiState.eaShowZero);
 
     var scopeOpts = '<option value="all"'+(uiState.eaScope==='all'?' selected':'')+'>كل الشركات والمشاريع</option>';
@@ -1316,7 +1371,14 @@
     '</div></div>'+
     '<div class="muted-note" style="margin-bottom:10px;">'+escapeHtml(eaScopeLabel(uiState.eaScope))+' — تحليل المصاريف: يناير-'+data.year+' الى ديسمبر-'+data.year+'</div>'+
     (built.rows.length ? '' : '<div class="panel"><div class="empty">لا توجد مصاريف مسجلة في '+data.year+' لهذا النطاق.</div></div>')+
-    '<div class="ea-wrap"><table class="ea-table"><thead>'+head+'</thead><tbody>'+body+grandRow+'</tbody></table></div>';
+    '<div class="ea-wrap"><table class="ea-table"><thead>'+head+'</thead><tbody>'+body+grandRow+'</tbody></table></div>'+
+    (eaLed ? ledgerTableHtml({
+      title:'كشف حساب المصاريف الشهري (مدين / دائن / رصيد)', year:data.year, months:eaLed.months,
+      openingBalance:eaLed.openingBalanceYear, closingBalance:eaLed.closingBalanceYear,
+      debitLabel:'مدين (مصروف)', creditLabel:'دائن (استرداد)',
+      openingLabel:'رصيد أول '+data.year, closingLabel:'رصيد آخر '+data.year
+    }) : '')+
+    '<div class="muted-note">صافي كل شهر هنا (مدين - دائن) بيطابق إجمالي نفس الشهر في جدول تحليل المصاريف بالأعلى لنفس النطاق والسنة.</div>';
   }
 
   function exportExpenseAnalysis(){
@@ -1613,7 +1675,15 @@
     });
 
     var cps = document.getElementById('ca-project-select');
-    if(cps) cps.addEventListener('change', function(){ uiState.caProjectId = Number(cps.value); loadAdminPage(); });
+    if(cps) cps.addEventListener('change', function(){ uiState.caProjectId = Number(cps.value); uiState.caLedgerYear = null; loadAdminPage(); });
+    var caLedgerPartnerEl = document.getElementById('ca-ledger-partner');
+    if(caLedgerPartnerEl) caLedgerPartnerEl.addEventListener('change', function(){
+      uiState.caLedgerPartnerId = Number(caLedgerPartnerEl.value); uiState.caLedgerYear = null; loadAdminPage(true);
+    });
+    var caLedgerYearEl = document.getElementById('ca-ledger-year');
+    if(caLedgerYearEl) caLedgerYearEl.addEventListener('change', function(){
+      uiState.caLedgerYear = Number(caLedgerYearEl.value); loadAdminPage(true);
+    });
     document.querySelectorAll('[data-edit-ob]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         var partnerId = btn.getAttribute('data-edit-ob');

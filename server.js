@@ -892,6 +892,59 @@ app.post('/api/inventory/collections/bulk-delete', auth, requireAdmin, async (re
 // ---------------------------------------------------------------------------
 // Current account
 // ---------------------------------------------------------------------------
+
+// Monthly statement (كشف حساب): مدين (withdrawals) / دائن (deposits+distributions) / رصيد آخر كل شهر.
+// Reconciles with the totals shown for the same partner+project in the period analysis.
+app.get('/api/current-account/ledger', auth, async (req, res) => {
+  const projectId = req.query.projectId;
+  const partnerId = req.user.role === 'admin' ? req.query.partnerId : req.user.partnerId;
+  let year = parseInt(req.query.year, 10);
+  if (!projectId || !partnerId) return res.status(400).json({ error: 'projectId و partnerId مطلوبان' });
+  if (!(await assertProjectAccess(req, res, projectId))) return;
+
+  const pp = (await pool.query(
+    'SELECT opening_balance FROM project_partners WHERE project_id=$1 AND partner_id=$2',
+    [projectId, partnerId]
+  )).rows[0];
+  if (!pp) return res.status(404).json({ error: 'هذا الشريك ليس له نصيب في هذا المشروع' });
+  const openingBalanceEver = Number(pp.opening_balance);
+
+  const yearsRows = (await pool.query(
+    'SELECT DISTINCT EXTRACT(YEAR FROM entry_date)::int AS y FROM current_account WHERE project_id=$1 AND partner_id=$2 ORDER BY y',
+    [projectId, partnerId]
+  )).rows;
+  const years = yearsRows.map(r => r.y);
+  if (!year) year = years.length ? years[years.length - 1] : new Date().getFullYear();
+
+  const priorRow = (await pool.query(`
+    SELECT COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE -amount END), 0) AS t
+    FROM current_account WHERE project_id=$1 AND partner_id=$2 AND entry_date < ($3 || '-01-01')::date
+  `, [projectId, partnerId, year])).rows[0];
+  const openingBalanceYear = openingBalanceEver + Number(priorRow.t);
+
+  const monthRows = (await pool.query(`
+    SELECT EXTRACT(MONTH FROM entry_date)::int AS m,
+      COALESCE(SUM(CASE WHEN kind = 'withdrawal' THEN amount ELSE 0 END), 0) AS debit,
+      COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE 0 END), 0) AS credit
+    FROM current_account
+    WHERE project_id=$1 AND partner_id=$2 AND EXTRACT(YEAR FROM entry_date)::int = $3
+    GROUP BY m
+  `, [projectId, partnerId, year])).rows;
+  const byMonth = {};
+  monthRows.forEach(r => { byMonth[r.m] = { debit: Number(r.debit), credit: Number(r.credit) }; });
+
+  let running = openingBalanceYear;
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const d = (byMonth[m] || { debit: 0, credit: 0 });
+    running += d.credit - d.debit;
+    months.push({ month: m, debit: d.debit, credit: d.credit, balance: running });
+  }
+
+  res.json({ projectId: Number(projectId), partnerId: Number(partnerId), year, years,
+    openingBalanceYear, closingBalanceYear: running, months });
+});
+
 app.get('/api/current-account', auth, async (req, res) => {
   const projectId = req.query.projectId;
   const partnerId = req.query.partnerId;
@@ -1100,6 +1153,79 @@ app.delete('/api/expense-items/:id', auth, requireAdmin, async (req, res) => {
   }
   await pool.query('DELETE FROM expense_items WHERE id=$1', [id]);
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Expense ledger (كشف حساب المصاريف): مدين / دائن / رصيد آخر كل شهر، لنفس النطاق
+// والسنة المستخدمين في تحليل المصاريف الشهري، فيتطابق الصافي الشهري بين الاثنين.
+// ---------------------------------------------------------------------------
+app.get('/api/reports/expense-ledger', auth, requireAdmin, async (req, res) => {
+  try {
+    const scope = String(req.query.scope || 'all');
+    const params0 = [];
+    let entriesFilter = '';
+    let companyFilter = '';
+    if (scope.startsWith('company:')) {
+      const id = parseInt(scope.slice(8), 10);
+      if (!id) return res.status(400).json({ error: 'نطاق غير صالح' });
+      params0.push(id);
+      entriesFilter = ' AND e.project_id IN (SELECT id FROM projects WHERE company_id = $1)';
+      companyFilter = ' AND ce.company_id = $1';
+    } else if (scope.startsWith('project:')) {
+      const id = parseInt(scope.slice(8), 10);
+      if (!id) return res.status(400).json({ error: 'نطاق غير صالح' });
+      params0.push(id);
+      entriesFilter = ' AND e.project_id = $1';
+      companyFilter = ' AND FALSE';
+    } else if (scope !== 'all') {
+      return res.status(400).json({ error: 'نطاق غير صالح' });
+    }
+
+    const yearRows = (await pool.query(`
+      SELECT DISTINCT y FROM (
+        SELECT EXTRACT(YEAR FROM e.entry_date)::int AS y FROM entries e WHERE e.kind='expense' ${entriesFilter}
+        UNION
+        SELECT EXTRACT(YEAR FROM ce.entry_date)::int AS y FROM company_expenses ce WHERE TRUE ${companyFilter}
+      ) t ORDER BY y
+    `, params0)).rows;
+    const years = yearRows.map(r => r.y);
+    let year = parseInt(req.query.year, 10);
+    if (!year) year = years.length ? years[years.length - 1] : new Date().getFullYear();
+
+    const priorRow = (await pool.query(`
+      SELECT
+        COALESCE((SELECT SUM(e.amount) FROM entries e WHERE e.kind='expense' AND e.entry_date < ($${params0.length+1} || '-01-01')::date ${entriesFilter}), 0)
+        + COALESCE((SELECT SUM(ce.amount) FROM company_expenses ce WHERE ce.entry_date < ($${params0.length+1} || '-01-01')::date ${companyFilter}), 0) AS t
+    `, [...params0, year])).rows[0];
+    const openingBalanceYear = Number(priorRow.t);
+
+    const monthRows = (await pool.query(`
+      SELECT m, SUM(debit) AS debit, SUM(credit) AS credit FROM (
+        SELECT EXTRACT(MONTH FROM e.entry_date)::int AS m,
+          GREATEST(e.amount,0) AS debit, GREATEST(-e.amount,0) AS credit
+        FROM entries e WHERE e.kind='expense' AND EXTRACT(YEAR FROM e.entry_date)::int = $${params0.length+1} ${entriesFilter}
+        UNION ALL
+        SELECT EXTRACT(MONTH FROM ce.entry_date)::int AS m,
+          GREATEST(ce.amount,0) AS debit, GREATEST(-ce.amount,0) AS credit
+        FROM company_expenses ce WHERE EXTRACT(YEAR FROM ce.entry_date)::int = $${params0.length+1} ${companyFilter}
+      ) t GROUP BY m
+    `, [...params0, year])).rows;
+    const byMonth = {};
+    monthRows.forEach(r => { byMonth[r.m] = { debit: Number(r.debit), credit: Number(r.credit) }; });
+
+    let running = openingBalanceYear;
+    const months = [];
+    for (let m = 1; m <= 12; m++) {
+      const d = byMonth[m] || { debit: 0, credit: 0 };
+      running += d.debit - d.credit;
+      months.push({ month: m, debit: d.debit, credit: d.credit, balance: running });
+    }
+
+    res.json({ scope, year, years, openingBalanceYear, closingBalanceYear: running, months });
+  } catch (e) {
+    console.error('expense ledger failed', e);
+    res.status(500).json({ error: 'تعذر تحميل كشف حساب المصاريف: ' + e.message });
+  }
 });
 
 // ---------------------------------------------------------------------------
