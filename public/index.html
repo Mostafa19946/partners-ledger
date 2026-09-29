@@ -149,7 +149,7 @@
   var partnerActiveProject = null;
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
-    companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{} };
+    companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{}, companyAssets:{} };
   var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null };
@@ -392,8 +392,10 @@
   }
   function mapExpenseRow(r){
     var date = excelToISODate(r['التاريخ']);
-    var amount = excelToNumber(r['المبلغ']);
-    if(!date || !amount || isNaN(amount)) return null;
+    var debit = excelToNumber(r['مدين']); if(isNaN(debit)) debit = 0;
+    var credit = excelToNumber(r['دائن']); if(isNaN(credit)) credit = 0;
+    var amount = debit - credit; // مدين = مصروف (+), دائن = استرداد (-) — البرنامج بيحسب الصافي والرصيد تلقائي
+    if(!date || !amount) return null;
     return {date:date, description:String(r['البيان']||'').trim(), amount:amount, category:String(r['التصنيف']||'أخرى').trim()};
   }
   function mapInventoryRow(r){
@@ -406,22 +408,42 @@
     return {name:name, unit:String(r['الوحدة']||'').trim(), quantityIn:qty, unitPrice: excelToNumber(r['سعر الوحدة'])||0, status: status||null,
       netArea: isNaN(netArea)?null:netArea, gardenArea: isNaN(gardenArea)?null:gardenArea};
   }
+  function mapAssetRow(r){
+    var name = String(r['اسم الأصل']||'').trim();
+    var purchaseDate = excelToISODate(r['تاريخ الشراء']);
+    var cost = excelToNumber(r['التكلفة']);
+    if(!name || !purchaseDate || !cost || isNaN(cost)) return null;
+    var life = r['سنوات العمر الافتراضي']!==undefined ? excelToNumber(r['سنوات العمر الافتراضي']) : NaN;
+    return {name:name, category:String(r['التصنيف']||'').trim()||null, purchaseDate:purchaseDate, cost:cost,
+      usefulLifeYears: isNaN(life)?null:life, notes:String(r['ملاحظات']||'').trim()||null};
+  }
   function mapCurrentAccountRowFactory(partnersList){
     var byName = {};
     partnersList.forEach(function(p){ byName[String(p.name).trim()] = p.partnerId; });
-    var kindMap = {'إيداع':'deposit','سحب':'withdrawal','توزيع أرباح':'distribution'};
     return function(r){
       var date = excelToISODate(r['التاريخ']);
-      var amount = excelToNumber(r['المبلغ']);
+      var debit = excelToNumber(r['مدين']); if(isNaN(debit)) debit = 0;
+      var credit = excelToNumber(r['دائن']); if(isNaN(credit)) credit = 0;
       var partnerName = String(r['اسم الشريك']||'').trim();
-      var kindText = String(r['النوع']||'').trim();
       var partnerId = byName[partnerName];
-      var kind = kindMap[kindText];
-      if(!date || !amount || isNaN(amount) || amount<=0 || !partnerId || !kind) return null;
-      return {date:date, amount:amount, partnerId:partnerId, kind:kind, description:String(r['البيان']||'').trim()};
+      var typeText = String(r['النوع']||'').trim();
+      if(!date || !partnerId) return null;
+      if(debit>0 && credit>0) return null; // صف لازم يكون مدين أو دائن، مش الاتنين مع بعض
+      if(debit>0) return {date:date, amount:debit, partnerId:partnerId, kind:'withdrawal', description:String(r['البيان']||'').trim()};
+      if(credit>0) return {date:date, amount:credit, partnerId:partnerId, kind:(typeText==='توزيع أرباح'?'distribution':'deposit'), description:String(r['البيان']||'').trim()};
+      return null;
     };
   }
 
+  function entryAmountCell(kind, amount){
+    amount = Number(amount)||0;
+    var isRev = kind==='revenue';
+    var neg = amount<0;
+    var isCreditDisplay = neg ? !isRev : isRev; // a negative amount flips the usual sign (refund/reversal)
+    var sign = isCreditDisplay ? '+' : '-';
+    var cls = isCreditDisplay ? 'credit' : 'debit';
+    return '<td class="amt '+cls+'">'+sign+money(Math.abs(amount))+'</td>';
+  }
   function money(n){ n=Number(n)||0; return n.toLocaleString('ar-EG',{minimumFractionDigits:2,maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return ""; var d = new Date(s); if(isNaN(d)) return s; return d.toLocaleDateString('ar-EG',{day:'2-digit',month:'2-digit',year:'numeric'}); }
   function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -575,6 +597,7 @@
         cache.companies.forEach(function(co){
           extraCalls.push(api('GET','/companies/'+co.id+'/expenses').then(function(r){ cache.companyExpenses[co.id]=r; }));
           extraCalls.push(api('GET','/companies/'+co.id+'/report').then(function(r){ cache.companyReports[co.id]=r; }));
+          extraCalls.push(api('GET','/companies/'+co.id+'/assets').then(function(r){ cache.companyAssets[co.id]=r; }));
         });
         await Promise.all(extraCalls);
       }
@@ -781,6 +804,22 @@
 
       var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
 
+      var assetList = cache.companyAssets[co.id] || [];
+      var assetTableKey = 'company-assets-'+co.id;
+      var totalCost=0, totalBookValue=0;
+      var assetRows = assetList.map(function(a){
+        totalCost += Number(a.cost); totalBookValue += Number(a.bookValue);
+        return '<tr>'+selectColCell(assetTableKey, a.id)+
+          '<td>'+escapeHtml(a.name)+'</td>'+
+          '<td>'+(a.category?escapeHtml(a.category):'—')+'</td>'+
+          '<td>'+fmtDate(a.purchase_date)+'</td>'+
+          '<td class="amt">'+money(a.cost)+'</td>'+
+          '<td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
+          '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td>'+
+          '<td class="amt teal">'+money(a.bookValue)+'</td>'+
+          '<td><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'">✕</button></td></tr>';
+      }).join('') || '<tr><td colspan="9" class="empty">لا توجد أصول ثابتة مسجلة بعد</td></tr>';
+
       var projectRows = rep ? rep.projects.map(function(p){
         return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt credit">'+money(p.revenue)+'</td><td class="amt debit">'+money(p.expense)+'</td>'+
           '<td class="amt '+(p.net>=0?'credit':'debit')+'">'+money(p.net)+'</td></tr>';
@@ -806,6 +845,8 @@
               '<div class="stat"><div class="label">مصاريف الشركة العمومية والإدارية</div><div class="val debit">'+money(rep.companyExpenses)+'</div></div>'+
               '<div class="stat"><div class="label">إجمالي كل المصاريف</div><div class="val debit">'+money(rep.grandTotalExpenses)+'</div></div>'+
               '<div class="stat"><div class="label">صافي ربح الشركة الكلي</div><div class="val '+(rep.grandNet>=0?'credit':'debit')+'">'+money(rep.grandNet)+'</div></div>'+
+              '<div class="stat"><div class="label">إجمالي تكلفة الأصول الثابتة</div><div class="val teal">'+money(rep.totalAssetsCost)+'</div></div>'+
+              '<div class="stat"><div class="label">القيمة الدفترية الحالية للأصول</div><div class="val credit">'+money(rep.totalAssetsBookValue)+'</div></div>'+
             '</div>'+
             '<table><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th></tr></thead><tbody>'+projectRows+'</tbody></table>'
           ) : '')+
@@ -823,6 +864,31 @@
             '<div class="field"><label>الوصف / البيان</label><input type="text" class="co-exp-desc"></div>'+
             '<button class="btn" type="submit" style="margin-top:8px;">إضافة مصروف</button>'+
           '</form>'+
+
+          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">سجل الأصول الثابتة</h3>'+
+          '<div class="muted-note">أصول الشركة (معدات، سيارات، أثاث...)، وبيتحسب الإهلاك المتراكم والقيمة الدفترية تلقائيًا بطريقة القسط الثابت لو حددت سنوات العمر الافتراضي.</div>'+
+          '<div class="grid-stats" style="margin-top:10px;">'+
+            '<div class="stat"><div class="label">إجمالي تكلفة الأصول</div><div class="val teal">'+money(totalCost)+'</div></div>'+
+            '<div class="stat"><div class="label">إجمالي القيمة الدفترية الحالية</div><div class="val credit">'+money(totalBookValue)+'</div></div>'+
+          '</div>'+
+          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(assetTableKey)+'</div>'+
+          '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(assetTableKey)+
+            '<th>اسم الأصل</th><th>التصنيف</th><th>تاريخ الشراء</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th><th></th>'+
+          '</tr></thead><tbody>'+assetRows+'</tbody></table></div>'+
+          '<form class="add-co-asset-form" data-company="'+co.id+'" style="margin-top:14px;">'+
+            '<div class="form-row three">'+
+              '<div class="field"><label>اسم الأصل</label><input type="text" class="co-asset-name" required></div>'+
+              '<div class="field"><label>التصنيف (اختياري)</label><input type="text" class="co-asset-category" placeholder="معدات / سيارات / أثاث"></div>'+
+              '<div class="field"><label>تاريخ الشراء</label><input type="date" class="co-asset-date" value="'+todayStr()+'" required></div>'+
+            '</div>'+
+            '<div class="form-row three">'+
+              '<div class="field"><label>التكلفة</label><input type="number" class="co-asset-cost" min="0" step="0.01" required></div>'+
+              '<div class="field"><label>سنوات العمر الافتراضي (اختياري)</label><input type="number" class="co-asset-life" min="0" step="0.5"></div>'+
+              '<div class="field"><label>ملاحظات</label><input type="text" class="co-asset-notes"></div>'+
+            '</div>'+
+            '<button class="btn" type="submit" style="margin-top:8px;">إضافة أصل</button>'+
+          '</form>'+
+          importPanelHtml('import-assets-'+co.id, 'استيراد الأصول الثابتة من إكسيل', 'اسم الأصل، تاريخ الشراء، التكلفة، التصنيف (اختياري)، سنوات العمر الافتراضي (اختياري)، ملاحظات (اختياري)')+
         '</div></div>';
     }).join('');
 
@@ -926,7 +992,7 @@
       return '<tr>'+selectColCell('entries', e.id)+'<td>'+fmtDate(e.entry_date)+'</td>'+
         '<td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
         '<td>'+escapeHtml(e.description||'—')+'</td>'+
-        '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td>'+
+        entryAmountCell(e.kind, e.amount)+
         extra+
         '<td><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="10" class="empty">لا توجد حركات بعد لهذا المشروع</td></tr>';
@@ -948,7 +1014,7 @@
       '<table><thead><tr>'+selectColHeader('entries')+'<th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
     importPanelHtml('import-rev', 'استيراد الإيرادات من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، المبلغ')+
-    importPanelHtml('import-exp', 'استيراد المصروفات من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، المبلغ، التصنيف (اسم البند زي ما هو في صفحة «بنود المصاريف»). المبالغ السالبة زي الاستردادات بتتسجل بالسالب.');
+    importPanelHtml('import-exp', 'استيراد المصروفات من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، مدين، دائن، التصنيف (اسم البند زي ما هو في صفحة «بنود المصاريف»). اكتب المصروف في عمود مدين، وأي استرداد أو رصيد راجع في عمود دائن — والبرنامج بيحسب الصافي والرصيد الشهري تلقائي.');
   }
 
   function pageCurrentAccount(){
@@ -1003,7 +1069,7 @@
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
-    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، النوع، المبلغ، البيان — والنوع يُكتب بالظبط: إيداع أو سحب أو توزيع أرباح')+
+    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، البيان، مدين، دائن، النوع (اختياري). اكتب السحب في عمود مدين، والإيداع في عمود دائن. لو الدائن توزيع أرباح مش إيداع عادي، اكتب في عمود النوع: توزيع أرباح — والبرنامج بيحسب الرصيد تلقائي.')+
     pageCurrentAccountLedger(partnersInCompany);
   }
 
@@ -1081,7 +1147,7 @@
     function renderRevGroup(g){
       var rows = g.items.map(function(e){
         return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(projectName)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+
-          '<td class="amt credit">+'+money(e.amount)+'</td></tr>';
+          entryAmountCell('revenue', e.amount)+'</tr>';
       }).join('');
       return '<div class="group-block"><div class="group-head"><span>'+escapeHtml(g.label)+'</span><span class="amt credit">'+money(g.total)+'</span></div>'+
         '<table><thead><tr><th>التاريخ</th><th>المشروع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -1092,7 +1158,7 @@
       }).join('');
       var rows = g.items.map(function(e){
         return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+(e.category?escapeHtml(e.category):'—')+'</td>'+
-          '<td>'+escapeHtml(e.description||'—')+'</td><td class="amt debit">-'+money(e.amount)+'</td></tr>';
+          '<td>'+escapeHtml(e.description||'—')+'</td>'+entryAmountCell('expense', e.amount)+'</tr>';
       }).join('');
       return '<div class="group-block"><div class="group-head"><span>'+escapeHtml(g.label)+'</span><span class="amt debit">'+money(g.total)+'</span></div>'+
         (catChips?('<div class="cat-chips">'+catChips+'</div>'):'')+
@@ -1521,8 +1587,39 @@
         catch(e){ alert(e.message); }
       });
     });
+    document.querySelectorAll('.add-co-asset-form').forEach(function(form){
+      form.addEventListener('submit', async function(ev){
+        ev.preventDefault();
+        var cid = form.getAttribute('data-company');
+        var body = {
+          name: form.querySelector('.co-asset-name').value.trim(),
+          category: form.querySelector('.co-asset-category').value.trim() || null,
+          purchaseDate: form.querySelector('.co-asset-date').value,
+          cost: parseFloat(form.querySelector('.co-asset-cost').value),
+          usefulLifeYears: form.querySelector('.co-asset-life').value ? parseFloat(form.querySelector('.co-asset-life').value) : null,
+          notes: form.querySelector('.co-asset-notes').value.trim() || null
+        };
+        try{ await api('POST','/companies/'+cid+'/assets',body); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
+    document.querySelectorAll('[data-del-co-asset]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var cid = btn.getAttribute('data-del-co-asset');
+        var aid = btn.getAttribute('data-co-asset-id');
+        try{ await api('DELETE','/companies/'+cid+'/assets/'+aid); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
     cache.companies.forEach(function(co){
       bindSelectableTable('company-exp-'+co.id, '/companies/'+co.id+'/expenses/bulk-delete');
+      bindSelectableTable('company-assets-'+co.id, '/companies/'+co.id+'/assets/bulk-delete');
+      bindTemplateButton('import-assets-'+co.id, 'نموذج_استيراد_الأصول_الثابتة.xlsx', 'الأصول الثابتة',
+        ['اسم الأصل','تاريخ الشراء','التكلفة','التصنيف','سنوات العمر الافتراضي','ملاحظات'],
+        ['سيارة نقل', '15/01/2025', 850000, 'سيارات', 5, ''], [24,16,16,18,20,26]);
+      bindImportPanel('import-assets-'+co.id, mapAssetRow, ['اسم الأصل','تاريخ الشراء','التكلفة'], function(rowsToImport){
+        return api('POST','/companies/'+co.id+'/assets/bulk', {rows: rowsToImport});
+      });
     });
     document.querySelectorAll('[data-save-co-share]').forEach(function(btn){
       btn.addEventListener('click', async function(){
@@ -1820,11 +1917,11 @@
     bindTemplateButton('import-rev', 'نموذج_استيراد_الإيرادات.xlsx', 'الإيرادات',
       ['التاريخ','البيان','المبلغ'], ['31/07/2025','دفعة من العميل أحمد',15000], [21,66,21]);
     bindTemplateButton('import-exp', 'نموذج_استيراد_المصروفات.xlsx', 'المصروفات',
-      ['التاريخ','البيان','المبلغ','التصنيف'], ['31/07/2025','تحويل دفعة من قسط تخصيص الأرض',1000000,'ارض المشروع - قيمه العقد'], [21,66,21,42]);
+      ['التاريخ','البيان','مدين','دائن','التصنيف'], ['31/07/2025','تحويل دفعة من قسط تخصيص الأرض',1000000,'','ارض المشروع - قيمه العقد'], [21,66,16,16,42]);
     bindTemplateButton('import-inv', 'نموذج_استيراد_المخزون.xlsx', 'المخزون',
       ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة','مساحة الوحدة','مساحة الجاردن'], ['كرتونة زيت 12 لتر','كرتونة',200,450,'متاح','','']);
     bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
-      ['التاريخ','اسم الشريك','النوع','المبلغ','البيان'], ['2026-01-10','محمد أحمد','إيداع',5000,'إيداع نقدي في حساب المشروع']);
+      ['التاريخ','اسم الشريك','البيان','مدين','دائن','النوع'], ['2026-01-10','محمد أحمد','إيداع نقدي في حساب الشركة','',5000,''], [16,22,34,14,14,16]);
 
     var eiRootForm = document.getElementById('ei-add-root-form');
     if(eiRootForm) eiRootForm.addEventListener('submit', async function(ev){
@@ -1894,7 +1991,7 @@
     bindImportPanel('import-rev', mapRevenueRow, ['التاريخ','البيان','المبلغ'], function(rowsToImport){
       return api('POST','/entries/bulk', {projectId: uiState.entriesProjectId, kind:'revenue', rows: rowsToImport});
     });
-    bindImportPanel('import-exp', mapExpenseRow, ['التاريخ','البيان','المبلغ','التصنيف'], function(rowsToImport){
+    bindImportPanel('import-exp', mapExpenseRow, ['التاريخ','البيان','مدين','دائن','التصنيف'], function(rowsToImport){
       return api('POST','/entries/bulk', {projectId: uiState.entriesProjectId, kind:'expense', rows: rowsToImport});
     });
     bindImportPanel('import-inv', mapInventoryRow, ['اسم الصنف','الوحدة','الكمية','سعر الوحدة'], function(rowsToImport){
@@ -1903,7 +2000,7 @@
     (function(){
       var caProj = cache.companies.find(function(c){ return c.id==uiState.caCompanyId; });
       var partnersList = caProj ? caProj.partners : [];
-      bindImportPanel('import-ca', mapCurrentAccountRowFactory(partnersList), ['التاريخ','اسم الشريك','النوع','المبلغ'], function(rowsToImport){
+      bindImportPanel('import-ca', mapCurrentAccountRowFactory(partnersList), ['التاريخ','اسم الشريك','مدين','دائن'], function(rowsToImport){
         return api('POST','/current-account/bulk', {companyId: uiState.caCompanyId, rows: rowsToImport});
       });
     })();
@@ -1970,7 +2067,7 @@
     var entriesRows = entries.map(function(e){
       return '<tr><td>'+fmtDate(e.entry_date)+'</td><td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
         '<td>'+escapeHtml(e.description||'—')+(e.category?(' <span class="tag cat">'+escapeHtml(e.category)+'</span>'):'')+'</td>'+
-        '<td class="amt '+(e.kind==='revenue'?'credit':'debit')+'">'+(e.kind==='revenue'?'+':'-')+money(e.amount)+'</td></tr>';
+        entryAmountCell(e.kind, e.amount)+'</tr>';
     }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على هذا المشروع بعد</td></tr>';
 
     // Inventory summary (read-only)

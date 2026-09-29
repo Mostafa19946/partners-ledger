@@ -222,6 +222,17 @@ async function initDb() {
       entry_date DATE NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS company_assets (
+      id SERIAL PRIMARY KEY,
+      company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      category TEXT,
+      purchase_date DATE NOT NULL,
+      cost NUMERIC NOT NULL,
+      useful_life_years NUMERIC,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL
@@ -590,9 +601,103 @@ app.post('/api/companies/:id/expenses/bulk', auth, requireAdmin, async (req, res
   }
 });
 
+// ---------------------------------------------------------------------------
+// Fixed assets register (سجل الأصول الثابتة), per company. Straight-line
+// depreciation is computed on read from cost, purchase_date and useful_life_years
+// (when given) — nothing to store or keep in sync.
+// ---------------------------------------------------------------------------
+function withAssetDepreciation(row) {
+  const cost = Number(row.cost);
+  const life = row.useful_life_years == null ? null : Number(row.useful_life_years);
+  let accumulatedDepreciation = 0;
+  let bookValue = cost;
+  let ageYears = null;
+  if (life && life > 0) {
+    const purchase = new Date(row.purchase_date);
+    ageYears = Math.max(0, (Date.now() - purchase.getTime()) / (365.25 * 86400 * 1000));
+    const annual = cost / life;
+    accumulatedDepreciation = Math.min(cost, annual * ageYears);
+    bookValue = cost - accumulatedDepreciation;
+  }
+  return { ...row, cost, usefulLifeYears: life, accumulatedDepreciation, bookValue };
+}
+
+app.get('/api/companies/:id/assets', auth, requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM company_assets WHERE company_id=$1 ORDER BY purchase_date DESC, created_at DESC',
+    [req.params.id]
+  );
+  res.json(rows.map(withAssetDepreciation));
+});
+
+app.post('/api/companies/:id/assets', auth, requireAdmin, async (req, res) => {
+  const { name, category, purchaseDate, cost, usefulLifeYears, notes } = req.body || {};
+  if (!name || !purchaseDate || !cost) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { rows } = await pool.query(
+    'INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+    [req.params.id, name, category || null, purchaseDate, cost, usefulLifeYears || null, notes || null]
+  );
+  res.json(withAssetDepreciation(rows[0]));
+});
+
+app.put('/api/companies/:id/assets/:assetId', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE company_assets SET
+       name = COALESCE($1, name),
+       category = COALESCE($2, category),
+       purchase_date = COALESCE($3, purchase_date),
+       cost = COALESCE($4, cost),
+       useful_life_years = COALESCE($5, useful_life_years),
+       notes = COALESCE($6, notes)
+     WHERE id=$7 AND company_id=$8 RETURNING *`,
+    [v(b.name), v(b.category), v(b.purchaseDate), v(b.cost), v(b.usefulLifeYears), v(b.notes), req.params.assetId, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(withAssetDepreciation(rows[0]));
+});
+
+app.delete('/api/companies/:id/assets/:assetId', auth, requireAdmin, async (req, res) => {
+  await pool.query('DELETE FROM company_assets WHERE id=$1 AND company_id=$2', [req.params.assetId, req.params.id]);
+  res.json({ ok: true });
+});
+
+app.post('/api/companies/:id/assets/bulk-delete', auth, requireAdmin, async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+  await pool.query('DELETE FROM company_assets WHERE id = ANY($1::int[]) AND company_id=$2', [ids, req.params.id]);
+  res.json({ ok: true, deleted: ids.length });
+});
+
+app.post('/api/companies/:id/assets/bulk', auth, requireAdmin, async (req, res) => {
+  const { rows } = req.body || {};
+  if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const valid = rows.filter(r => r.name && r.cost && r.purchaseDate && isValidISODate(r.purchaseDate));
+  if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ)' });
+  try {
+    await pool.query(
+      `INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes)
+       SELECT $1, u.name, u.category, u.purchase_date, u.cost, u.useful_life_years, u.notes
+       FROM UNNEST($2::text[], $3::text[], $4::date[], $5::numeric[], $6::numeric[], $7::text[])
+         AS u(name, category, purchase_date, cost, useful_life_years, notes)`,
+      [req.params.id, valid.map(r => r.name), valid.map(r => r.category || null),
+       valid.map(r => r.purchaseDate), valid.map(r => r.cost),
+       valid.map(r => r.usefulLifeYears || null), valid.map(r => r.notes || null)]
+    );
+    res.json({ inserted: valid.length });
+  } catch (e) {
+    console.error('assets bulk import failed', e);
+    res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
+  }
+});
+
 // Aggregate report: company's own general expenses + costs and revenue of every project under it
 app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
   const companyId = req.params.id;
+  const assetRows = (await pool.query('SELECT * FROM company_assets WHERE company_id=$1', [companyId])).rows.map(withAssetDepreciation);
+  const totalAssetsCost = assetRows.reduce((s, a) => s + a.cost, 0);
+  const totalAssetsBookValue = assetRows.reduce((s, a) => s + a.bookValue, 0);
   const companyExpRows = (await pool.query(
     'SELECT category, COALESCE(SUM(amount),0) AS t FROM company_expenses WHERE company_id=$1 GROUP BY category',
     [companyId]
@@ -647,7 +752,9 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
     totalProjectRevenue,
     totalProjectExpense,
     grandTotalExpenses: companyExpenses + totalProjectExpense,
-    grandNet
+    grandNet,
+    totalAssetsCost,
+    totalAssetsBookValue
   });
 });
 
