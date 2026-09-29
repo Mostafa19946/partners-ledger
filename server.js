@@ -119,6 +119,65 @@ function isValidISODate(s) {
 }
 
 // ---------------------------------------------------------------------------
+// One-time migration: the current account (partner deposits/withdrawals/
+// distributions and opening balances) moves from being per-project to being
+// per-company. Runs once, guarded by a row in schema_migrations, and is
+// itself a single transaction so it either fully applies or not at all.
+// ---------------------------------------------------------------------------
+async function migrateCurrentAccountToCompanyLevel() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  const already = await pool.query(`SELECT 1 FROM schema_migrations WHERE name='current_account_to_company_v1'`);
+  if (already.rows.length) return;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1) Point every existing current_account row at its project's company (where known)
+    await client.query(`
+      UPDATE current_account ca SET company_id = p.company_id
+      FROM projects p WHERE p.id = ca.project_id AND ca.company_id IS NULL
+    `);
+
+    // 2) Merge each project's opening_balance into its company's opening_balance
+    //    (summed across every project of that company the partner had a balance in).
+    //    A company_partners row is created automatically if the partner wasn't added
+    //    to that company yet, with percentage=0 so no money is silently dropped.
+    const toMerge = (await client.query(`
+      SELECT p.company_id, pp.partner_id, SUM(pp.opening_balance) AS total
+      FROM project_partners pp
+      JOIN projects p ON p.id = pp.project_id
+      WHERE p.company_id IS NOT NULL AND pp.opening_balance <> 0
+      GROUP BY p.company_id, pp.partner_id
+    `)).rows;
+    for (const row of toMerge) {
+      await client.query(`
+        INSERT INTO company_partners (company_id, partner_id, percentage, opening_balance)
+        VALUES ($1, $2, 0, $3)
+        ON CONFLICT (company_id, partner_id)
+        DO UPDATE SET opening_balance = company_partners.opening_balance + EXCLUDED.opening_balance
+      `, [row.company_id, row.partner_id, row.total]);
+    }
+
+    const orphanCount = (await client.query(
+      `SELECT COUNT(*)::int AS c FROM current_account WHERE company_id IS NULL`
+    )).rows[0].c;
+
+    await client.query(
+      `INSERT INTO schema_migrations (name) VALUES ('current_account_to_company_v1')`
+    );
+    await client.query('COMMIT');
+    console.log(`MIGRATION current_account_to_company_v1 applied. Projects merged: ${toMerge.length}. Orphan current_account rows (project had no company): ${orphanCount}.`);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('MIGRATION current_account_to_company_v1 FAILED (nothing changed):', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Schema bootstrap (idempotent) + admin seed
 // ---------------------------------------------------------------------------
 async function initDb() {
@@ -146,6 +205,7 @@ async function initDb() {
       percentage NUMERIC NOT NULL,
       UNIQUE(company_id, partner_id)
     );
+    ALTER TABLE company_partners ADD COLUMN IF NOT EXISTS opening_balance NUMERIC NOT NULL DEFAULT 0;
     CREATE TABLE IF NOT EXISTS expense_items (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
@@ -195,7 +255,7 @@ async function initDb() {
     );
     CREATE TABLE IF NOT EXISTS current_account (
       id SERIAL PRIMARY KEY,
-      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
       partner_id INTEGER NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK (kind IN ('deposit','withdrawal','distribution')),
       amount NUMERIC NOT NULL,
@@ -203,6 +263,8 @@ async function initDb() {
       entry_date DATE NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE current_account ALTER COLUMN project_id DROP NOT NULL;
+    ALTER TABLE current_account ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);
     CREATE TABLE IF NOT EXISTS inventory_items (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -248,6 +310,7 @@ async function initDb() {
   `);
 
   await migrateFromSourceIfRequested();
+  await migrateCurrentAccountToCompanyLevel();
 
   // Seed the default expense items once
   const itemCount = (await pool.query('SELECT COUNT(*)::int AS c FROM expense_items')).rows[0].c;
@@ -420,13 +483,13 @@ app.delete('/api/partners/:id', auth, requireAdmin, async (req, res) => {
 app.get('/api/companies', auth, requireAdmin, async (req, res) => {
   const companies = (await pool.query('SELECT id, name FROM companies ORDER BY id')).rows;
   const shares = (await pool.query(`
-    SELECT cp.company_id, cp.partner_id, cp.percentage, p.name AS partner_name
+    SELECT cp.company_id, cp.partner_id, cp.percentage, cp.opening_balance, p.name AS partner_name
     FROM company_partners cp JOIN partners p ON p.id = cp.partner_id
   `)).rows;
   const withShares = companies.map(c => ({
     ...c,
     partners: shares.filter(s => s.company_id === c.id)
-      .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), name: s.partner_name }))
+      .map(s => ({ partnerId: s.partner_id, percentage: Number(s.percentage), openingBalance: Number(s.opening_balance), name: s.partner_name }))
   }));
   res.json(withShares);
 });
@@ -445,12 +508,12 @@ app.delete('/api/companies/:id', auth, requireAdmin, async (req, res) => {
 });
 
 app.post('/api/companies/:id/partners', auth, requireAdmin, async (req, res) => {
-  const { partnerId, percentage } = req.body || {};
+  const { partnerId, percentage, openingBalance } = req.body || {};
   if (!partnerId || percentage === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
   try {
     const { rows } = await pool.query(
-      'INSERT INTO company_partners (company_id, partner_id, percentage) VALUES ($1,$2,$3) RETURNING *',
-      [req.params.id, partnerId, percentage]
+      'INSERT INTO company_partners (company_id, partner_id, percentage, opening_balance) VALUES ($1,$2,$3,$4) RETURNING *',
+      [req.params.id, partnerId, percentage, openingBalance || 0]
     );
     res.json(rows[0]);
   } catch (e) {
@@ -459,10 +522,13 @@ app.post('/api/companies/:id/partners', auth, requireAdmin, async (req, res) => 
 });
 
 app.put('/api/companies/:id/partners/:partnerId', auth, requireAdmin, async (req, res) => {
-  const { percentage } = req.body || {};
+  const { percentage, openingBalance } = req.body || {};
   const { rows } = await pool.query(
-    'UPDATE company_partners SET percentage=$1 WHERE company_id=$2 AND partner_id=$3 RETURNING *',
-    [percentage, req.params.id, req.params.partnerId]
+    `UPDATE company_partners SET
+       percentage = COALESCE($1, percentage),
+       opening_balance = COALESCE($2, opening_balance)
+     WHERE company_id=$3 AND partner_id=$4 RETURNING *`,
+    [percentage === undefined ? null : percentage, openingBalance === undefined ? null : openingBalance, req.params.id, req.params.partnerId]
   );
   if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
   res.json(rows[0]);
@@ -549,16 +615,39 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
   }));
   const totalProjectRevenue = projects.reduce((s, p) => s + p.revenue, 0);
   const totalProjectExpense = projects.reduce((s, p) => s + p.expense, 0);
+  const grandNet = totalProjectRevenue - (companyExpenses + totalProjectExpense);
+
+  const shareRows = (await pool.query(`
+    SELECT cp.partner_id, cp.percentage, cp.opening_balance, p.name
+    FROM company_partners cp JOIN partners p ON p.id = cp.partner_id
+    WHERE cp.company_id = $1
+  `, [companyId])).rows;
+  const caRows = (await pool.query(`
+    SELECT partner_id,
+      COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE -amount END),0) AS balance
+    FROM current_account WHERE company_id=$1 GROUP BY partner_id
+  `, [companyId])).rows;
+  const caMap = {};
+  caRows.forEach(r => { caMap[r.partner_id] = Number(r.balance); });
+  const partners = shareRows.map(s => ({
+    partnerId: s.partner_id,
+    name: s.name,
+    percentage: Number(s.percentage),
+    openingBalance: Number(s.opening_balance),
+    shareOfNet: grandNet * (Number(s.percentage) / 100),
+    currentAccountBalance: (caMap[s.partner_id] || 0) + Number(s.opening_balance)
+  }));
 
   res.json({
     companyId: Number(companyId),
     companyExpenses,
     companyExpensesByCategory,
     projects,
+    partners,
     totalProjectRevenue,
     totalProjectExpense,
     grandTotalExpenses: companyExpenses + totalProjectExpense,
-    grandNet: totalProjectRevenue - (companyExpenses + totalProjectExpense)
+    grandNet
   });
 });
 
@@ -667,6 +756,19 @@ async function assertProjectAccess(req, res, projectId) {
   );
   if (!rows.length) {
     res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذا المشروع' });
+    return false;
+  }
+  return true;
+}
+
+async function assertCompanyAccess(req, res, companyId) {
+  if (req.user.role === 'admin') return true;
+  const { rows } = await pool.query(
+    'SELECT 1 FROM company_partners WHERE company_id=$1 AND partner_id=$2',
+    [companyId, req.user.partnerId]
+  );
+  if (!rows.length) {
+    res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
     return false;
   }
   return true;
@@ -894,32 +996,47 @@ app.post('/api/inventory/collections/bulk-delete', auth, requireAdmin, async (re
 // ---------------------------------------------------------------------------
 
 // Monthly statement (كشف حساب): مدين (withdrawals) / دائن (deposits+distributions) / رصيد آخر كل شهر.
-// Reconciles with the totals shown for the same partner+project in the period analysis.
+// Reconciles with the totals shown for the same partner+company in the period analysis.
 app.get('/api/current-account/ledger', auth, async (req, res) => {
-  const projectId = req.query.projectId;
-  const partnerId = req.user.role === 'admin' ? req.query.partnerId : req.user.partnerId;
-  let year = parseInt(req.query.year, 10);
-  if (!projectId || !partnerId) return res.status(400).json({ error: 'projectId و partnerId مطلوبان' });
-  if (!(await assertProjectAccess(req, res, projectId))) return;
+  const companyId = req.query.companyId;
+  if (!companyId) return res.status(400).json({ error: 'companyId مطلوب' });
+  if (!(await assertCompanyAccess(req, res, companyId))) return;
 
-  const pp = (await pool.query(
-    'SELECT opening_balance FROM project_partners WHERE project_id=$1 AND partner_id=$2',
-    [projectId, partnerId]
-  )).rows[0];
-  if (!pp) return res.status(404).json({ error: 'هذا الشريك ليس له نصيب في هذا المشروع' });
-  const openingBalanceEver = Number(pp.opening_balance);
+  // Admins may ask for the combined ledger of every partner at once (aggregate = "مجمع").
+  // Partners always see their own detailed ("تفصيلي") ledger only.
+  const aggregate = req.user.role === 'admin' && req.query.partnerId === 'all';
+  const partnerId = aggregate ? null : (req.user.role === 'admin' ? req.query.partnerId : req.user.partnerId);
+  let year = parseInt(req.query.year, 10);
+  if (!aggregate && !partnerId) return res.status(400).json({ error: 'partnerId مطلوب' });
+
+  const partnerFilter = aggregate ? '' : ' AND partner_id=$2';
+  const partnerParam = aggregate ? [companyId] : [companyId, partnerId];
+
+  let openingBalanceEver;
+  if (aggregate) {
+    openingBalanceEver = Number((await pool.query(
+      'SELECT COALESCE(SUM(opening_balance),0) AS t FROM company_partners WHERE company_id=$1', [companyId]
+    )).rows[0].t);
+  } else {
+    const cp = (await pool.query(
+      'SELECT opening_balance FROM company_partners WHERE company_id=$1 AND partner_id=$2',
+      [companyId, partnerId]
+    )).rows[0];
+    if (!cp) return res.status(404).json({ error: 'هذا الشريك ليس له نصيب في هذه الشركة' });
+    openingBalanceEver = Number(cp.opening_balance);
+  }
 
   const yearsRows = (await pool.query(
-    'SELECT DISTINCT EXTRACT(YEAR FROM entry_date)::int AS y FROM current_account WHERE project_id=$1 AND partner_id=$2 ORDER BY y',
-    [projectId, partnerId]
+    `SELECT DISTINCT EXTRACT(YEAR FROM entry_date)::int AS y FROM current_account WHERE company_id=$1${partnerFilter} ORDER BY y`,
+    partnerParam
   )).rows;
   const years = yearsRows.map(r => r.y);
   if (!year) year = years.length ? years[years.length - 1] : new Date().getFullYear();
 
   const priorRow = (await pool.query(`
     SELECT COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE -amount END), 0) AS t
-    FROM current_account WHERE project_id=$1 AND partner_id=$2 AND entry_date < ($3 || '-01-01')::date
-  `, [projectId, partnerId, year])).rows[0];
+    FROM current_account WHERE company_id=$1${partnerFilter} AND entry_date < (($${partnerParam.length + 1}) || '-01-01')::date
+  `, [...partnerParam, year])).rows[0];
   const openingBalanceYear = openingBalanceEver + Number(priorRow.t);
 
   const monthRows = (await pool.query(`
@@ -927,9 +1044,9 @@ app.get('/api/current-account/ledger', auth, async (req, res) => {
       COALESCE(SUM(CASE WHEN kind = 'withdrawal' THEN amount ELSE 0 END), 0) AS debit,
       COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE 0 END), 0) AS credit
     FROM current_account
-    WHERE project_id=$1 AND partner_id=$2 AND EXTRACT(YEAR FROM entry_date)::int = $3
+    WHERE company_id=$1${partnerFilter} AND EXTRACT(YEAR FROM entry_date)::int = $${partnerParam.length + 1}
     GROUP BY m
-  `, [projectId, partnerId, year])).rows;
+  `, [...partnerParam, year])).rows;
   const byMonth = {};
   monthRows.forEach(r => { byMonth[r.m] = { debit: Number(r.debit), credit: Number(r.credit) }; });
 
@@ -941,18 +1058,18 @@ app.get('/api/current-account/ledger', auth, async (req, res) => {
     months.push({ month: m, debit: d.debit, credit: d.credit, balance: running });
   }
 
-  res.json({ projectId: Number(projectId), partnerId: Number(partnerId), year, years,
+  res.json({ companyId: Number(companyId), partnerId: aggregate ? null : Number(partnerId), aggregate, year, years,
     openingBalanceYear, closingBalanceYear: running, months });
 });
 
 app.get('/api/current-account', auth, async (req, res) => {
-  const projectId = req.query.projectId;
+  const companyId = req.query.companyId;
   const partnerId = req.query.partnerId;
-  if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
-  if (!(await assertProjectAccess(req, res, projectId))) return;
+  if (!companyId) return res.status(400).json({ error: 'companyId مطلوب' });
+  if (!(await assertCompanyAccess(req, res, companyId))) return;
   const effectivePartnerId = req.user.role === 'admin' ? partnerId : req.user.partnerId;
-  let query = 'SELECT * FROM current_account WHERE project_id=$1';
-  const params = [projectId];
+  let query = 'SELECT * FROM current_account WHERE company_id=$1';
+  const params = [companyId];
   if (effectivePartnerId) {
     params.push(effectivePartnerId);
     query += ` AND partner_id=$${params.length}`;
@@ -963,13 +1080,13 @@ app.get('/api/current-account', auth, async (req, res) => {
 });
 
 app.post('/api/current-account', auth, requireAdmin, async (req, res) => {
-  const { projectId, partnerId, kind, amount, description, date } = req.body || {};
-  if (!projectId || !partnerId || !['deposit', 'withdrawal', 'distribution'].includes(kind) || !amount || !date) {
+  const { companyId, partnerId, kind, amount, description, date } = req.body || {};
+  if (!companyId || !partnerId || !['deposit', 'withdrawal', 'distribution'].includes(kind) || !amount || !date) {
     return res.status(400).json({ error: 'بيانات ناقصة' });
   }
   const { rows } = await pool.query(
-    'INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [projectId, partnerId, kind, amount, description || null, date]
+    'INSERT INTO current_account (company_id, partner_id, kind, amount, description, entry_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    [companyId, partnerId, kind, amount, description || null, date]
   );
   res.json(rows[0]);
 });
@@ -992,9 +1109,10 @@ app.post('/api/current-account/bulk-delete', auth, requireAdmin, async (req, res
 app.get('/api/me/projects', auth, async (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
   const { rows } = await pool.query(`
-    SELECT pr.id, pr.name, pp.percentage
+    SELECT pr.id, pr.name, pp.percentage, pr.company_id AS "companyId", c.name AS "companyName"
     FROM projects pr
     JOIN project_partners pp ON pp.project_id = pr.id
+    LEFT JOIN companies c ON c.id = pr.company_id
     WHERE pp.partner_id = $1
     ORDER BY pr.id
   `, [req.user.partnerId]);
@@ -1016,27 +1134,16 @@ app.get('/api/report/:projectId', auth, async (req, res) => {
   const net = revenue - expense;
 
   const sharesRes = await pool.query(`
-    SELECT pp.partner_id, pp.percentage, pp.opening_balance, p.name
+    SELECT pp.partner_id, pp.percentage, p.name
     FROM project_partners pp JOIN partners p ON p.id = pp.partner_id
     WHERE pp.project_id = $1
   `, [projectId]);
-
-  const balancesRes = await pool.query(`
-    SELECT partner_id,
-      COALESCE(SUM(CASE WHEN kind IN ('deposit','distribution') THEN amount ELSE -amount END),0) AS balance
-    FROM current_account WHERE project_id=$1
-    GROUP BY partner_id
-  `, [projectId]);
-  const balanceMap = {};
-  balancesRes.rows.forEach(r => { balanceMap[r.partner_id] = Number(r.balance); });
 
   const partners = sharesRes.rows.map(s => ({
     partnerId: s.partner_id,
     name: s.name,
     percentage: Number(s.percentage),
-    openingBalance: Number(s.opening_balance),
-    shareOfNet: net * (Number(s.percentage) / 100),
-    currentAccountBalance: (balanceMap[s.partner_id] || 0) + Number(s.opening_balance)
+    shareOfNet: net * (Number(s.percentage) / 100)
   }));
 
   res.json({ projectId: Number(projectId), revenue, expense, net, partners });
@@ -1352,17 +1459,17 @@ app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
 });
 
 app.post('/api/current-account/bulk', auth, requireAdmin, async (req, res) => {
-  const { projectId, rows } = req.body || {}; // rows: [{partnerId, kind, amount, date, description}]
-  if (!projectId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const { companyId, rows } = req.body || {}; // rows: [{partnerId, kind, amount, date, description}]
+  if (!companyId || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
   const valid = rows.filter(r => r.partnerId && r.amount && r.date && isValidISODate(r.date) && ['deposit', 'withdrawal', 'distribution'].includes(r.kind));
   if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ والنوع)' });
   try {
     await pool.query(
-      `INSERT INTO current_account (project_id, partner_id, kind, amount, description, entry_date)
+      `INSERT INTO current_account (company_id, partner_id, kind, amount, description, entry_date)
        SELECT $1, u.partner_id, u.kind, u.amount, u.description, u.entry_date
        FROM UNNEST($2::int[], $3::text[], $4::numeric[], $5::text[], $6::date[])
          AS u(partner_id, kind, amount, description, entry_date)`,
-      [projectId, valid.map(r => r.partnerId), valid.map(r => r.kind),
+      [companyId, valid.map(r => r.partnerId), valid.map(r => r.kind),
        valid.map(r => r.amount), valid.map(r => r.description || null), valid.map(r => r.date)]
     );
     res.json({ inserted: valid.length });

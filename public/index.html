@@ -150,7 +150,7 @@
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
     companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{} };
-  var uiState = { entriesProjectId:null, caProjectId:null, reportProjectId:null,
+  var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null };
 
@@ -558,10 +558,11 @@
   async function loadAdminPage(force){
     var main = document.getElementById('main-area');
     var tabKey = adminTab;
-    if(['entries','analytics','inventory','current','report'].indexOf(adminTab)>=0){
-      var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', current:'caProjectId', report:'reportProjectId'};
+    if(['entries','analytics','inventory','report'].indexOf(adminTab)>=0){
+      var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', report:'reportProjectId'};
       tabKey = adminTab + ':' + (uiState[pidMap[adminTab]] || (cache.projects[0] && cache.projects[0].id) || '');
     }
+    if(adminTab==='current') tabKey = adminTab+':'+uiState.caCompanyId+':'+uiState.caLedgerPartnerId+':'+uiState.caLedgerYear;
     if(adminTab==='expenseAnalysis') tabKey = adminTab+':'+uiState.eaScope+':'+(uiState.eaYear||'');
     if(!force && loadedTabs[tabKey]){ renderAdminMain(); return; }
     main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
@@ -638,20 +639,20 @@
         }
       }
       else if(adminTab==='current'){
-        cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
-        if(cache.projects.length){
-          if(!uiState.caProjectId) uiState.caProjectId = cache.projects[0].id;
-          cache.currentAccount[uiState.caProjectId] = await api('GET','/current-account?projectId='+uiState.caProjectId);
-          var caProjForLedger = cache.projects.find(function(p){ return p.id===uiState.caProjectId; });
-          var caPartners = caProjForLedger ? caProjForLedger.partners : [];
-          if(caPartners.length && (!uiState.caLedgerPartnerId || !caPartners.some(function(p){ return p.partnerId===uiState.caLedgerPartnerId; }))){
-            uiState.caLedgerPartnerId = caPartners[0].partnerId;
+        cache.companies = cache.companies.length? cache.companies : await api('GET','/companies');
+        if(cache.companies.length){
+          if(!uiState.caCompanyId) uiState.caCompanyId = cache.companies[0].id;
+          cache.currentAccount[uiState.caCompanyId] = await api('GET','/current-account?companyId='+uiState.caCompanyId);
+          var caCoForLedger = cache.companies.find(function(c){ return c.id===uiState.caCompanyId; });
+          var caPartners = caCoForLedger ? caCoForLedger.partners : [];
+          if(caPartners.length && !uiState.caLedgerPartnerId){
+            uiState.caLedgerPartnerId = 'all';
           }
           if(uiState.caLedgerPartnerId){
-            var ledUrl = '/current-account/ledger?projectId='+uiState.caProjectId+'&partnerId='+uiState.caLedgerPartnerId+(uiState.caLedgerYear?'&year='+uiState.caLedgerYear:'');
+            var ledUrl = '/current-account/ledger?companyId='+uiState.caCompanyId+'&partnerId='+uiState.caLedgerPartnerId+(uiState.caLedgerYear?'&year='+uiState.caLedgerYear:'');
             var ledRes = await api('GET', ledUrl);
             uiState.caLedgerYear = ledRes.year;
-            cache.caLedger[uiState.caProjectId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] = ledRes;
+            cache.caLedger[uiState.caCompanyId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] = ledRes;
           }
         }
       }
@@ -755,10 +756,11 @@
         return '<tr>'+
           '<td>'+escapeHtml(sh.name)+'</td>'+
           '<td><input type="number" class="edit-co-pct" data-company="'+co.id+'" data-partner="'+sh.partnerId+'" value="'+sh.percentage+'" min="0" max="100" step="0.01" style="width:90px;"></td>'+
+          '<td><input type="number" class="edit-co-ob" data-company="'+co.id+'" data-partner="'+sh.partnerId+'" value="'+sh.openingBalance+'" step="0.01" style="width:130px;"></td>'+
           '<td><button class="btn ghost sm" data-save-co-share="'+co.id+'" data-partner-save="'+sh.partnerId+'">حفظ</button></td>'+
           '<td><button class="del-x" data-remove-co-share="'+co.id+'" data-partner-remove="'+sh.partnerId+'">✕</button></td>'+
         '</tr>';
-      }).join('') || '<tr><td colspan="4" class="empty">لا يوجد شركاء في هذه الشركة بعد</td></tr>';
+      }).join('') || '<tr><td colspan="5" class="empty">لا يوجد شركاء في هذه الشركة بعد</td></tr>';
 
       var pctTotal = co.partners.reduce(function(s,p){return s+p.percentage;},0);
       var currentPartnerIds = co.partners.map(function(s){return s.partnerId;});
@@ -787,7 +789,7 @@
       return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(co.name)+'</h3>'+
         '<button class="btn danger sm" data-del-company="'+co.id+'">حذف الشركة</button></div>'+
         '<div class="panel-body">'+
-          '<table><thead><tr><th>الشريك</th><th>النسبة % في الشركة</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+          '<table><thead><tr><th>الشريك</th><th>النسبة % في الشركة</th><th>الرصيد الافتتاحي</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
           '<div class="pct-total '+(Math.abs(pctTotal-100)<0.001?'ok':'bad')+'" style="margin-top:10px;">إجمالي النسب: '+pctTotal+'%</div>'+
           (addableOptions ? (
             '<div class="form-row" style="margin-top:16px;">'+
@@ -836,16 +838,14 @@
 
   function pageProjects(){
     var cards = cache.projects.map(function(pr){
-      var totals = null; // not fetched here; percentages/opening balances only
       var shareRows = pr.partners.map(function(sh){
         return '<tr>'+
           '<td>'+escapeHtml(sh.name)+'</td>'+
           '<td><input type="number" class="edit-pct" data-project="'+pr.id+'" data-partner="'+sh.partnerId+'" value="'+sh.percentage+'" min="0" max="100" step="0.01" style="width:90px;"></td>'+
-          '<td><input type="number" class="edit-ob" data-project="'+pr.id+'" data-partner="'+sh.partnerId+'" value="'+sh.openingBalance+'" step="0.01" style="width:120px;"></td>'+
           '<td><button class="btn ghost sm" data-save-share="'+pr.id+'" data-partner-save="'+sh.partnerId+'">حفظ</button></td>'+
           '<td><button class="del-x" data-remove-share="'+pr.id+'" data-partner-remove="'+sh.partnerId+'">✕</button></td>'+
         '</tr>';
-      }).join('') || '<tr><td colspan="5" class="empty">لا يوجد شركاء</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="empty">لا يوجد شركاء</td></tr>';
 
       var currentPartnerIds = pr.partners.map(function(s){return s.partnerId;});
       var addableOptions = cache.partners.filter(function(p){return currentPartnerIds.indexOf(p.id)===-1;})
@@ -864,12 +864,11 @@
             '<div class="field"><label>الشركة التابع لها المشروع</label><select class="proj-company-select" data-project="'+pr.id+'">'+companyOptions+'</select></div>'+
             '<div><button class="btn ghost sm" data-save-proj-company="'+pr.id+'">حفظ الشركة</button></div>'+
           '</div>'+
-          '<table><thead><tr><th>الشريك</th><th>النسبة %</th><th>الرصيد الافتتاحي</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+          '<table><thead><tr><th>الشريك</th><th>النسبة %</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
           (addableOptions ? (
-            '<div class="form-row three" style="margin-top:16px;">'+
+            '<div class="form-row" style="margin-top:16px;">'+
               '<div class="field"><label>إضافة شريك لهذا المشروع</label><select class="add-share-partner" data-project="'+pr.id+'">'+addableOptions+'</select></div>'+
               '<div class="field"><label>النسبة %</label><input type="number" class="add-share-pct" data-project="'+pr.id+'" min="0" max="100" step="0.01" value="0"></div>'+
-              '<div class="field"><label>الرصيد الافتتاحي</label><input type="number" class="add-share-ob" data-project="'+pr.id+'" step="0.01" value="0"></div>'+
             '</div><button class="btn sm" data-add-share="'+pr.id+'">إضافة الشريك للمشروع</button>'
           ) : '')+
         '</div></div>';
@@ -884,7 +883,7 @@
       '</div>';
     }).join('') || '<div class="empty">أضف شركاء أولاً من صفحة "الشركاء"</div>';
 
-    return '<div class="page-head"><h2>المشاريع</h2><p>كل مشروع، نسبة كل شريك، ورصيده الافتتاحي في الحساب الجاري.</p></div>'+
+    return '<div class="page-head"><h2>المشاريع</h2><p>كل مشروع ونسبة كل شريك في توزيع أرباح المشروع نفسه. الحساب الجاري ورصيده الافتتاحي بقوا على مستوى الشركة من تبويب "الشركات".</p></div>'+
     (cards || '<div class="panel"><div class="empty">لا توجد مشاريع بعد</div></div>')+
     '<div class="panel"><div class="panel-head"><h3>إنشاء مشروع جديد</h3></div><div class="panel-body">'+
       '<form id="add-project-form">'+
@@ -953,44 +952,44 @@
   }
 
   function pageCurrentAccount(){
-    if(cache.projects.length===0) return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
-    var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==uiState.caProjectId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
-    var proj = cache.projects.find(function(p){return p.id==uiState.caProjectId;});
-    var partnersInProject = proj ? proj.partners : [];
-    var partnerOptions = partnersInProject.map(function(p){return '<option value="'+p.partnerId+'">'+escapeHtml(p.name)+'</option>';}).join('');
+    if(cache.companies.length===0) return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2></div><div class="panel"><div class="empty">أنشئ شركة أولاً من تبويب "الشركات".</div></div>';
+    var coOptions = cache.companies.map(function(c){return '<option value="'+c.id+'"'+(c.id==uiState.caCompanyId?' selected':'')+'>'+escapeHtml(c.name)+'</option>';}).join('');
+    var co = cache.companies.find(function(c){return c.id==uiState.caCompanyId;});
+    var partnersInCompany = co ? co.partners : [];
+    var partnerOptions = partnersInCompany.map(function(p){return '<option value="'+p.partnerId+'">'+escapeHtml(p.name)+'</option>';}).join('');
 
-    var list = (cache.currentAccount[uiState.caProjectId]||[]);
+    var list = (cache.currentAccount[uiState.caCompanyId]||[]);
     var balances = {};
-    partnersInProject.forEach(function(p){ balances[p.partnerId]=Number(p.openingBalance)||0; });
+    partnersInCompany.forEach(function(p){ balances[p.partnerId]=Number(p.openingBalance)||0; });
     list.forEach(function(c){
       var d = (c.kind==='withdrawal') ? -Number(c.amount) : Number(c.amount);
       balances[c.partner_id] = (balances[c.partner_id]||0) + d;
     });
-    var balanceCards = partnersInProject.map(function(p){
+    var balanceCards = partnersInCompany.map(function(p){
       var bal = balances[p.partnerId]||0;
       return '<div class="stat"><div class="label">'+escapeHtml(p.name)+' <span style="font-weight:400;">(افتتاحي: '+money(p.openingBalance)+')</span></div>'+
         '<div class="val '+(bal>=0?'credit':'debit')+'">'+money(bal)+'</div>'+
         '<button class="btn ghost sm" style="margin-top:8px;" data-edit-ob="'+p.partnerId+'" data-current-ob="'+p.openingBalance+'">تعديل الرصيد الافتتاحي</button>'+
       '</div>';
-    }).join('') || '<div class="empty">لا يوجد شركاء في هذا المشروع</div>';
+    }).join('') || '<div class="empty">لا يوجد شركاء في هذه الشركة</div>';
 
     var kindLabel = {deposit:'إيداع', withdrawal:'سحب', distribution:'توزيع أرباح'};
     var kindTag = {deposit:'dep', withdrawal:'wd', distribution:'dist'};
     var rows = list.map(function(c){
-      var p = partnersInProject.find(function(pp){return pp.partnerId==c.partner_id;});
+      var p = partnersInCompany.find(function(pp){return pp.partnerId==c.partner_id;});
       var isCredit = c.kind!=='withdrawal';
       return '<tr>'+selectColCell('current-account', c.id)+'<td>'+fmtDate(c.entry_date)+'</td><td>'+escapeHtml(p?p.name:'—')+'</td>'+
         '<td><span class="tag '+kindTag[c.kind]+'">'+kindLabel[c.kind]+'</span></td>'+
         '<td>'+escapeHtml(c.description||'—')+'</td>'+
         '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td>'+
         '<td><button class="del-x" data-del-ca="'+c.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="7" class="empty">لا توجد حركات على الحساب الجاري لهذا المشروع</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty">لا توجد حركات على الحساب الجاري لهذه الشركة</td></tr>';
 
-    return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2><p>سجّل الإيداعات والسحوبات وتوزيعات الأرباح لكل شريك.</p></div>'+
-    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="ca-project-select">'+pOptions+'</select></div>'+
+    return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2><p>حساب جاري كل شريك على مستوى الشركة، مش على مستوى مشروع معين.</p></div>'+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>الشركة</label><select id="ca-company-select">'+coOptions+'</select></div>'+
     '<div class="grid-stats">'+balanceCards+'</div>'+
     '<div class="panel"><div class="panel-head"><h3>إضافة حركة على الحساب الجاري</h3></div><div class="panel-body">'+
-      (partnersInProject.length===0 ? '<div class="empty">أضف شركاء لهذا المشروع أولاً.</div>' :
+      (partnersInCompany.length===0 ? '<div class="empty">أضف شركاء لهذه الشركة أولاً من تبويب "الشركات".</div>' :
       '<form id="add-ca-form"><div class="form-row three">'+
         '<div class="field"><label>الشريك</label><select id="nca-partner">'+partnerOptions+'</select></div>'+
         '<div class="field"><label>نوع الحركة</label><select id="nca-kind"><option value="deposit">إيداع (له)</option><option value="withdrawal">سحب (عليه)</option><option value="distribution">توزيع أرباح (له)</option></select></div>'+
@@ -1005,29 +1004,32 @@
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
     importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، النوع، المبلغ، البيان — والنوع يُكتب بالظبط: إيداع أو سحب أو توزيع أرباح')+
-    pageCurrentAccountLedger(partnersInProject);
+    pageCurrentAccountLedger(partnersInCompany);
   }
 
-  function pageCurrentAccountLedger(partnersInProject){
-    if(!partnersInProject.length) return '';
-    var partnerOpts = partnersInProject.map(function(p){
-      return '<option value="'+p.partnerId+'"'+(p.partnerId===uiState.caLedgerPartnerId?' selected':'')+'>'+escapeHtml(p.name)+'</option>';
-    }).join('');
-    var led = cache.caLedger[uiState.caProjectId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] || null;
+  function pageCurrentAccountLedger(partnersInCompany){
+    if(!partnersInCompany.length) return '';
+    var partnerOpts = '<option value="all"'+(uiState.caLedgerPartnerId==='all'?' selected':'')+'>كل الشركاء (مجمع)</option>'+
+      partnersInCompany.map(function(p){
+        return '<option value="'+p.partnerId+'"'+(String(p.partnerId)===String(uiState.caLedgerPartnerId)?' selected':'')+'>'+escapeHtml(p.name)+' (تفصيلي)</option>';
+      }).join('');
+    var led = cache.caLedger[uiState.caCompanyId+'|'+uiState.caLedgerPartnerId+'|'+uiState.caLedgerYear] || null;
     var years = led ? (led.years||[]).slice() : [];
     if(led && years.indexOf(led.year)<0) years.push(led.year);
     years.sort(function(a,b){ return b-a; });
     var yearOpts = years.map(function(y){ return '<option value="'+y+'"'+(led && y===led.year?' selected':'')+'>'+y+'</option>'; }).join('');
+    var isAgg = uiState.caLedgerPartnerId==='all';
+    var partnerName = isAgg ? '' : (partnersInCompany.find(function(p){return String(p.partnerId)===String(uiState.caLedgerPartnerId);})||{}).name;
 
-    return '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">كشف الحساب الشهري (مدين / دائن / رصيد)</h2></div>'+
+    return '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">كشف الحساب الشهري — مجمع لكل الشركاء أو تفصيلي لكل شريك</h2></div>'+
     '<div class="panel"><div class="panel-body">'+
       '<div class="form-row" style="align-items:end;">'+
-        '<div class="field"><label>الشريك</label><select id="ca-ledger-partner">'+partnerOpts+'</select></div>'+
+        '<div class="field"><label>العرض</label><select id="ca-ledger-partner">'+partnerOpts+'</select></div>'+
         '<div class="field"><label>السنة</label><select id="ca-ledger-year">'+yearOpts+'</select></div>'+
       '</div>'+
     '</div></div>'+
     (led ? ledgerTableHtml({
-      title:'كشف حساب '+(partnersInProject.find(function(p){return p.partnerId===uiState.caLedgerPartnerId;})||{}).name,
+      title: isAgg ? 'الكشف المجمع — إجمالي الحساب الجاري لكل الشركاء معًا' : 'كشف حساب '+escapeHtml(partnerName||'')+' (تفصيلي)',
       year:led.year, months:led.months, openingBalance:led.openingBalanceYear, closingBalance:led.closingBalanceYear,
       debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
       openingLabel:'رصيد أول '+led.year, closingLabel:'رصيد آخر '+led.year
@@ -1527,7 +1529,8 @@
         var cid = btn.getAttribute('data-save-co-share');
         var partnerId = btn.getAttribute('data-partner-save');
         var pctInput = document.querySelector('.edit-co-pct[data-company="'+cid+'"][data-partner="'+partnerId+'"]');
-        try{ await api('PUT','/companies/'+cid+'/partners/'+partnerId,{percentage:parseFloat(pctInput.value)}); invalidateAndReload(); }
+        var obInput = document.querySelector('.edit-co-ob[data-company="'+cid+'"][data-partner="'+partnerId+'"]');
+        try{ await api('PUT','/companies/'+cid+'/partners/'+partnerId,{percentage:parseFloat(pctInput.value), openingBalance:parseFloat(obInput.value)}); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
@@ -1564,9 +1567,8 @@
         var pid = btn.getAttribute('data-save-share');
         var partnerId = btn.getAttribute('data-partner-save');
         var pctInput = document.querySelector('.edit-pct[data-project="'+pid+'"][data-partner="'+partnerId+'"]');
-        var obInput = document.querySelector('.edit-ob[data-project="'+pid+'"][data-partner="'+partnerId+'"]');
         try{
-          await api('PUT','/projects/'+pid+'/partners/'+partnerId,{percentage:parseFloat(pctInput.value), openingBalance:parseFloat(obInput.value)});
+          await api('PUT','/projects/'+pid+'/partners/'+partnerId,{percentage:parseFloat(pctInput.value)});
           invalidateAndReload();
         }catch(e){ alert(e.message); }
       });
@@ -1585,9 +1587,8 @@
         var pid = btn.getAttribute('data-add-share');
         var sel = document.querySelector('.add-share-partner[data-project="'+pid+'"]');
         var pct = document.querySelector('.add-share-pct[data-project="'+pid+'"]');
-        var ob = document.querySelector('.add-share-ob[data-project="'+pid+'"]');
         try{
-          await api('POST','/projects/'+pid+'/partners',{partnerId:Number(sel.value), percentage:parseFloat(pct.value)||0, openingBalance:parseFloat(ob.value)||0});
+          await api('POST','/projects/'+pid+'/partners',{partnerId:Number(sel.value), percentage:parseFloat(pct.value)||0});
           invalidateAndReload();
         }catch(e){ alert(e.message); }
       });
@@ -1674,11 +1675,11 @@
       });
     });
 
-    var cps = document.getElementById('ca-project-select');
-    if(cps) cps.addEventListener('change', function(){ uiState.caProjectId = Number(cps.value); uiState.caLedgerYear = null; loadAdminPage(); });
+    var cps = document.getElementById('ca-company-select');
+    if(cps) cps.addEventListener('change', function(){ uiState.caCompanyId = Number(cps.value); uiState.caLedgerYear = null; loadAdminPage(); });
     var caLedgerPartnerEl = document.getElementById('ca-ledger-partner');
     if(caLedgerPartnerEl) caLedgerPartnerEl.addEventListener('change', function(){
-      uiState.caLedgerPartnerId = Number(caLedgerPartnerEl.value); uiState.caLedgerYear = null; loadAdminPage(true);
+      uiState.caLedgerPartnerId = caLedgerPartnerEl.value==='all' ? 'all' : Number(caLedgerPartnerEl.value); uiState.caLedgerYear = null; loadAdminPage(true);
     });
     var caLedgerYearEl = document.getElementById('ca-ledger-year');
     if(caLedgerYearEl) caLedgerYearEl.addEventListener('change', function(){
@@ -1692,14 +1693,14 @@
         if(val===null) return;
         var num = parseFloat(val);
         if(isNaN(num)){ alert('قيمة غير صحيحة'); return; }
-        try{ await api('PUT','/projects/'+uiState.caProjectId+'/partners/'+partnerId,{openingBalance:num}); invalidateAndReload(); }
+        try{ await api('PUT','/companies/'+uiState.caCompanyId+'/partners/'+partnerId,{openingBalance:num}); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
     var acf = document.getElementById('add-ca-form');
     if(acf) acf.addEventListener('submit', async function(ev){
       ev.preventDefault();
-      var body = { projectId: uiState.caProjectId, partnerId: Number(document.getElementById('nca-partner').value),
+      var body = { companyId: uiState.caCompanyId, partnerId: Number(document.getElementById('nca-partner').value),
         kind: document.getElementById('nca-kind').value, amount: parseFloat(document.getElementById('nca-amount').value),
         date: document.getElementById('nca-date').value, description: document.getElementById('nca-desc').value.trim() };
       try{ await api('POST','/current-account',body); invalidateAndReload(); } catch(e){ alert(e.message); }
@@ -1900,10 +1901,10 @@
       return api('POST','/inventory/items/bulk', {projectId: uiState.invProjectId, rows: rowsToImport});
     });
     (function(){
-      var caProj = cache.projects.find(function(p){ return p.id==uiState.caProjectId; });
+      var caProj = cache.companies.find(function(c){ return c.id==uiState.caCompanyId; });
       var partnersList = caProj ? caProj.partners : [];
       bindImportPanel('import-ca', mapCurrentAccountRowFactory(partnersList), ['التاريخ','اسم الشريك','النوع','المبلغ'], function(rowsToImport){
-        return api('POST','/current-account/bulk', {projectId: uiState.caProjectId, rows: rowsToImport});
+        return api('POST','/current-account/bulk', {companyId: uiState.caCompanyId, rows: rowsToImport});
       });
     })();
   }
@@ -1936,18 +1937,22 @@
         main.innerHTML = '<div class="page-head"><h2>حسابك</h2></div><div class="panel"><div class="empty">لم يتم ربطك بأي مشروع بعد. تواصل مع المدير المسؤول عن إدخال البيانات.</div></div>';
         return;
       }
-      var results = await Promise.all([
+      var activeProj = cache.meProjects.find(function(p){ return p.id===partnerActiveProject; });
+      var companyId = activeProj ? activeProj.companyId : null;
+      var calls = [
         api('GET','/report/'+partnerActiveProject),
-        api('GET','/current-account?projectId='+partnerActiveProject),
         api('GET','/entries?projectId='+partnerActiveProject),
         api('GET','/expense-payments?projectId='+partnerActiveProject),
         api('GET','/inventory/items?projectId='+partnerActiveProject),
         api('GET','/inventory/sales?projectId='+partnerActiveProject),
         api('GET','/inventory/collections?projectId='+partnerActiveProject)
-      ]);
-      var rep = results[0], caEntries = results[1], entries = results[2], expPayments = results[3],
-        invItems = results[4], invSales = results[5], invCollections = results[6];
-      main.innerHTML = renderPartnerDashboard(rep, caEntries, entries, expPayments, invItems, invSales, invCollections);
+      ];
+      if(companyId) calls.push(api('GET','/current-account/ledger?companyId='+companyId));
+      var results = await Promise.all(calls);
+      var rep = results[0], entries = results[1], expPayments = results[2],
+        invItems = results[3], invSales = results[4], invCollections = results[5],
+        ledger = companyId ? results[6] : null;
+      main.innerHTML = renderPartnerDashboard(rep, ledger, entries, expPayments, invItems, invSales, invCollections);
       document.querySelectorAll('[data-project]').forEach(function(chip){
         chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
       });
@@ -1955,21 +1960,12 @@
       main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
     }
   }
-  function renderPartnerDashboard(rep, caEntries, entries, expPayments, invItems, invSales, invCollections){
+  function renderPartnerDashboard(rep, ledger, entries, expPayments, invItems, invSales, invCollections){
     var myShare = rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {};
-    var projectName = cache.meProjects.find(function(p){return p.id===partnerActiveProject;}).name;
+    var activeProj = cache.meProjects.find(function(p){return p.id===partnerActiveProject;});
     var chips = cache.meProjects.map(function(p){
       return '<div class="chip'+(p.id===partnerActiveProject?' active':'')+'" data-project="'+p.id+'">'+escapeHtml(p.name)+'</div>';
     }).join('');
-
-    var kindLabel = {deposit:'إيداع', withdrawal:'سحب', distribution:'توزيع أرباح'};
-    var kindTag = {deposit:'dep', withdrawal:'wd', distribution:'dist'};
-    var caRows = caEntries.map(function(c){
-      var isCredit = c.kind!=='withdrawal';
-      return '<tr><td>'+fmtDate(c.entry_date)+'</td><td><span class="tag '+kindTag[c.kind]+'">'+kindLabel[c.kind]+'</span></td>'+
-        '<td>'+escapeHtml(c.description||'—')+'</td>'+
-        '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td></tr>';
-    }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على حسابك الجاري بعد</td></tr>';
 
     var entriesRows = entries.map(function(e){
       return '<tr><td>'+fmtDate(e.entry_date)+'</td><td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
@@ -2000,18 +1996,25 @@
 
     return '<div class="page-head"><h2>حسابك</h2><p>البيانات محدّثة مباشرة من قاعدة البيانات المركزية.</p></div>'+
     (cache.meProjects.length>1 ? '<div class="select-projects">'+chips+'</div>' : '')+
-    '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(projectName)+'»</div>'+
-      '<div class="v">'+money(myShare.currentAccountBalance||0)+'</div></div>'+
-      '<div class="pct">نسبتك في المشروع: '+(myShare.percentage||0)+'%</div></div>'+
+    (activeProj && activeProj.companyId ? (
+      '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(activeProj.companyName||'الشركة')+'»</div>'+
+        '<div class="v">'+money(ledger?ledger.closingBalanceYear:0)+'</div></div>'+
+        '<div class="pct">نسبتك في المشروع «'+escapeHtml(activeProj.name)+'»: '+(myShare.percentage||0)+'%</div></div>'
+    ) : (
+      '<div class="error-box">هذا المشروع غير مربوط بشركة بعد، فمفيش حساب جاري ليك عليه. تواصل مع المدير المسؤول.</div>'
+    ))+
     '<div class="grid-stats">'+
       '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
       '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
       '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
       '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
     '</div>'+
-    '<div class="panel"><div class="panel-head"><h3>حركات حسابك الجاري</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+caRows+'</tbody></table>'+
-    '</div></div>'+
+    (ledger ? ledgerTableHtml({
+      title:'كشف حساب جاريك في «'+escapeHtml(activeProj.companyName||'')+'» — مدين / دائن / رصيد',
+      year:ledger.year, months:ledger.months, openingBalance:ledger.openingBalanceYear, closingBalance:ledger.closingBalanceYear,
+      debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
+      openingLabel:'رصيد أول '+ledger.year, closingLabel:'رصيد آخر '+ledger.year
+    }) : '')+
     '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
     '</div></div>'+
