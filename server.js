@@ -1226,6 +1226,18 @@ app.get('/api/me/projects', auth, async (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/me/companies', auth, async (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
+  const { rows } = await pool.query(`
+    SELECT c.id, c.name, cp.percentage
+    FROM companies c
+    JOIN company_partners cp ON cp.company_id = c.id
+    WHERE cp.partner_id = $1
+    ORDER BY c.id
+  `, [req.user.partnerId]);
+  res.json(rows);
+});
+
 app.get('/api/report/:projectId', auth, async (req, res) => {
   const projectId = req.params.projectId;
   if (!(await assertProjectAccess(req, res, projectId))) return;

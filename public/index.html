@@ -148,7 +148,8 @@
   var loginError = "";
   var adminTab = 'companies';
   var partnerActiveProject = null;
-  var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], report:{},
+  var partnerActiveCompany = null;
+  var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], meCompanies:[], report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
     companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{}, companyAssets:{} };
   var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
@@ -2103,34 +2104,41 @@
   async function loadPartnerDashboard(){
     var main = document.getElementById('main-area');
     try{
-      cache.meProjects = await api('GET','/me/projects');
+      var initial = await Promise.all([api('GET','/me/projects'), api('GET','/me/companies')]);
+      cache.meProjects = initial[0]; cache.meCompanies = initial[1];
       if(!partnerActiveProject && cache.meProjects.length) partnerActiveProject = cache.meProjects[0].id;
-      if(cache.meProjects.length===0){
-        main.innerHTML = '<div class="page-head"><h2>حسابك</h2></div><div class="panel"><div class="empty">لم يتم ربطك بأي مشروع بعد. تواصل مع المدير المسؤول عن إدخال البيانات.</div></div>';
+      if(!partnerActiveCompany && cache.meCompanies.length) partnerActiveCompany = cache.meCompanies[0].id;
+      if(cache.meProjects.length===0 && cache.meCompanies.length===0){
+        main.innerHTML = '<div class="page-head"><h2>حسابك</h2></div><div class="panel"><div class="empty">لم يتم ربطك بأي شركة أو مشروع بعد. تواصل مع المدير المسؤول عن إدخال البيانات.</div></div>';
         return;
       }
-      var activeProj = cache.meProjects.find(function(p){ return p.id===partnerActiveProject; });
-      var companyId = activeProj ? activeProj.companyId : null;
-      var calls = [
-        api('GET','/report/'+partnerActiveProject),
-        api('GET','/entries?projectId='+partnerActiveProject),
-        api('GET','/expense-payments?projectId='+partnerActiveProject),
-        api('GET','/inventory/items?projectId='+partnerActiveProject),
-        api('GET','/inventory/sales?projectId='+partnerActiveProject),
-        api('GET','/inventory/collections?projectId='+partnerActiveProject)
-      ];
-      if(companyId){
-        calls.push(api('GET','/current-account/ledger?companyId='+companyId));
-        calls.push(api('GET','/current-account?companyId='+companyId));
+      var calls = [];
+      if(partnerActiveProject){
+        calls.push(api('GET','/report/'+partnerActiveProject));
+        calls.push(api('GET','/entries?projectId='+partnerActiveProject));
+        calls.push(api('GET','/expense-payments?projectId='+partnerActiveProject));
+        calls.push(api('GET','/inventory/items?projectId='+partnerActiveProject));
+        calls.push(api('GET','/inventory/sales?projectId='+partnerActiveProject));
+        calls.push(api('GET','/inventory/collections?projectId='+partnerActiveProject));
+      } else {
+        calls.push(null, [], [], [], [], []);
+      }
+      if(partnerActiveCompany){
+        calls.push(api('GET','/current-account/ledger?companyId='+partnerActiveCompany));
+        calls.push(api('GET','/current-account?companyId='+partnerActiveCompany));
+      } else {
+        calls.push(null, []);
       }
       var results = await Promise.all(calls);
       var rep = results[0], entries = results[1], expPayments = results[2],
         invItems = results[3], invSales = results[4], invCollections = results[5],
-        ledger = companyId ? results[6] : null,
-        caTx = companyId ? results[7] : [];
+        ledger = results[6], caTx = results[7];
       main.innerHTML = renderPartnerDashboard(rep, ledger, caTx, entries, expPayments, invItems, invSales, invCollections);
       document.querySelectorAll('[data-project]').forEach(function(chip){
         chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
+      });
+      document.querySelectorAll('[data-company]').forEach(function(chip){
+        chip.addEventListener('click', function(){ partnerActiveCompany = Number(chip.getAttribute('data-company')); loadPartnerDashboard(); });
       });
       bindLedgerToggles();
     }catch(e){
@@ -2138,10 +2146,14 @@
     }
   }
   function renderPartnerDashboard(rep, ledger, caTx, entries, expPayments, invItems, invSales, invCollections){
-    var myShare = rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {};
+    var myShare = rep ? (rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {}) : {};
     var activeProj = cache.meProjects.find(function(p){return p.id===partnerActiveProject;});
-    var chips = cache.meProjects.map(function(p){
+    var activeCompany = cache.meCompanies.find(function(c){return c.id===partnerActiveCompany;});
+    var projectChips = cache.meProjects.map(function(p){
       return '<div class="chip'+(p.id===partnerActiveProject?' active':'')+'" data-project="'+p.id+'">'+escapeHtml(p.name)+'</div>';
+    }).join('');
+    var companyChips = cache.meCompanies.map(function(c){
+      return '<div class="chip'+(c.id===partnerActiveCompany?' active':'')+'" data-company="'+c.id+'">'+escapeHtml(c.name)+'</div>';
     }).join('');
 
     var entriesRows = entries.map(function(e){
@@ -2172,39 +2184,50 @@
     var totalExpRemaining = totalExpense-totalPaid;
 
     return '<div class="page-head"><h2>حسابك</h2><p>البيانات محدّثة مباشرة من قاعدة البيانات المركزية.</p></div>'+
-    (cache.meProjects.length>1 ? '<div class="select-projects">'+chips+'</div>' : '')+
-    (activeProj && activeProj.companyId ? (
-      '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(activeProj.companyName||'الشركة')+'»</div>'+
+
+    // ---- Current account: tied to the company directly, independent of which project is selected below ----
+    '<h3 style="margin:4px 0 10px;font-size:15px;color:var(--teal-deep);">حسابك الجاري</h3>'+
+    (cache.meCompanies.length>1 ? '<div class="select-projects">'+companyChips+'</div>' : '')+
+    (activeCompany ? (
+      '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(activeCompany.name)+'»</div>'+
         '<div class="v">'+money(ledger?ledger.closingBalanceYear:0)+' '+balanceTag(ledger?ledger.closingBalanceYear:0)+'</div></div>'+
-        '<div class="pct">نسبتك في المشروع «'+escapeHtml(activeProj.name)+'»: '+(myShare.percentage||0)+'%</div></div>'
+        '<div class="pct">نسبتك في الشركة: '+(activeCompany.percentage||0)+'%</div></div>'
     ) : (
-      '<div class="error-box">هذا المشروع غير مربوط بشركة بعد، فمفيش حساب جاري ليك عليه. تواصل مع المدير المسؤول.</div>'
+      '<div class="error-box">لسه متربطش بأي شركة، فمفيش حساب جاري ليك. تواصل مع المدير المسؤول.</div>'
     ))+
-    '<div class="grid-stats">'+
-      '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
-      '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
-      '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
-      '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
-    '</div>'+
     (ledger ? ledgerTableHtml({
-      title:'كشف حساب جاريك في «'+escapeHtml(activeProj.companyName||'')+'» — مدين / دائن / رصيد',
+      title:'كشف حساب جاريك في «'+escapeHtml(activeCompany?activeCompany.name:'')+'» — مدين / دائن / رصيد',
       year:ledger.year, months:ledger.months, openingBalance:ledger.openingBalanceYear, closingBalance:ledger.closingBalanceYear,
       transactions: caTx||[],
       debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
       openingLabel:'رصيد أول '+ledger.year, closingLabel:'رصيد آخر '+ledger.year
     }) : '')+
-    '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
-    '</div></div>'+
-    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
-    '</div></div>'+
-    '<div class="grid-stats">'+
-      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
-      '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
-      '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemainingCollection>0.001?'debit':'credit')+'">'+money(totalRemainingCollection)+'</div></div>'+
-      '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
-    '</div>';
+
+    // ---- Project performance: separate section, its own project selector ----
+    (cache.meProjects.length ? (
+      '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">أداء المشروع</h3>'+
+      (cache.meProjects.length>1 ? '<div class="select-projects">'+projectChips+'</div>' : '')+
+      (rep ? (
+        '<div class="grid-stats">'+
+          '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
+          '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
+          '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+          '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
+        '</div>'+
+        '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
+          '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
+        '</div></div>'+
+        '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
+          '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
+        '</div></div>'+
+        '<div class="grid-stats">'+
+          '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
+          '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
+          '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemainingCollection>0.001?'debit':'credit')+'">'+money(totalRemainingCollection)+'</div></div>'+
+          '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
+        '</div>'
+      ) : '<div class="panel"><div class="empty">جارِ التحميل…</div></div>')
+    ) : '');
   }
 
   render();
