@@ -362,13 +362,18 @@
           statusEl.innerHTML = '<div class="error-box">أعمدة ناقصة في الملف: '+missing.join('، ')+'</div>';
           return;
         }
-        var valid = [], invalid = 0;
+        var valid = [], invalid = 0, reasons = {};
         raw.forEach(function(r){
           var mapped = mapRow(r);
-          if(mapped) valid.push(mapped); else invalid++;
+          if(mapped && !mapped.__invalid) valid.push(mapped);
+          else if(mapped && mapped.__invalid){ invalid++; reasons[mapped.reason] = (reasons[mapped.reason]||0)+1; }
         });
         pendingRows = valid;
-        statusEl.innerHTML = '<div class="ok-box">تم قراءة '+raw.length+' صف — صالح للاستيراد: '+valid.length+(invalid?('، تم تجاهله (بيانات ناقصة أو غير صحيحة): '+invalid):'')+'</div>';
+        var reasonList = Object.keys(reasons).sort(function(a,b){ return reasons[b]-reasons[a]; }).slice(0,8)
+          .map(function(r){ return '<li>'+escapeHtml(r)+' ('+reasons[r]+' صف)</li>'; }).join('');
+        statusEl.innerHTML = '<div class="'+(valid.length?'ok-box':'error-box')+'">تم قراءة '+raw.length+' صف — صالح للاستيراد: '+valid.length+
+          (invalid?('، تم تجاهله (بيانات ناقصة أو غير صحيحة): '+invalid):'')+'</div>'+
+          (reasonList ? '<div class="error-box" style="margin-top:8px;">أسباب الرفض:<ul style="margin:6px 0 0;padding-right:18px;">'+reasonList+'</ul></div>' : '');
         if(valid.length){ confirmBtn.style.display='inline-flex'; }
       }catch(e){
         statusEl.innerHTML = '<div class="error-box">'+escapeHtml(e.message)+'</div>';
@@ -388,7 +393,10 @@
   function mapRevenueRow(r){
     var date = excelToISODate(r['التاريخ']);
     var amount = excelToNumber(r['المبلغ']);
-    if(!date || !amount || isNaN(amount)) return null;
+    var hasAny = r['التاريخ']!=null && String(r['التاريخ']).trim()!=='';
+    if(!hasAny && (amount==null || isNaN(amount))) return null;
+    if(!date) return {__invalid:true, reason:'تاريخ غير صالح'};
+    if(!amount || isNaN(amount)) return {__invalid:true, reason:'المبلغ غير صحيح أو فاضي'};
     return {date:date, description:String(r['البيان']||'').trim(), amount:amount};
   }
   function mapExpenseRow(r){
@@ -396,7 +404,10 @@
     var debit = excelToNumber(r['مدين']); if(isNaN(debit)) debit = 0;
     var credit = excelToNumber(r['دائن']); if(isNaN(credit)) credit = 0;
     var amount = debit - credit; // مدين = مصروف (+), دائن = استرداد (-) — البرنامج بيحسب الصافي والرصيد تلقائي
-    if(!date || !amount) return null;
+    var hasAny = r['التاريخ']!=null && String(r['التاريخ']).trim()!=='';
+    if(!hasAny && !amount) return null;
+    if(!date) return {__invalid:true, reason:'تاريخ غير صالح'};
+    if(!amount) return {__invalid:true, reason:'لا يوجد مبلغ في عمود مدين أو دائن'};
     return {date:date, description:String(r['البيان']||'').trim(), amount:amount, category:String(r['التصنيف']||'أخرى').trim()};
   }
   function mapInventoryRow(r){
@@ -418,21 +429,24 @@
     return {name:name, category:String(r['التصنيف']||'').trim()||null, purchaseDate:purchaseDate, cost:cost,
       usefulLifeYears: isNaN(life)?null:life, notes:String(r['ملاحظات']||'').trim()||null};
   }
+  function normName(s){ return String(s==null?'':s).trim().replace(/\s+/g,' ').toLowerCase(); }
   function mapCurrentAccountRowFactory(partnersList){
     var byName = {};
-    partnersList.forEach(function(p){ byName[String(p.name).trim()] = p.partnerId; });
+    partnersList.forEach(function(p){ byName[normName(p.name)] = p.partnerId; });
     return function(r){
       var date = excelToISODate(r['التاريخ']);
       var debit = excelToNumber(r['مدين']); if(isNaN(debit)) debit = 0;
       var credit = excelToNumber(r['دائن']); if(isNaN(credit)) credit = 0;
-      var partnerName = String(r['اسم الشريك']||'').trim();
-      var partnerId = byName[partnerName];
+      var partnerNameRaw = String(r['اسم الشريك']||'').trim();
+      var partnerId = byName[normName(partnerNameRaw)];
       var typeText = String(r['النوع']||'').trim();
-      if(!date || !partnerId) return null;
-      if(debit>0 && credit>0) return null; // صف لازم يكون مدين أو دائن، مش الاتنين مع بعض
+      if(!date && !partnerNameRaw && !debit && !credit) return null; // blank row, no diagnostic needed
+      if(partnerNameRaw && !partnerId) return {__invalid:true, reason:'اسم الشريك "'+partnerNameRaw+'" غير موجود بالظبط في هذه الشركة'};
+      if(!date) return {__invalid:true, reason:'تاريخ غير صالح'};
+      if(debit>0 && credit>0) return {__invalid:true, reason:'الصف فيه مدين ودائن مع بعض في نفس الوقت'};
       if(debit>0) return {date:date, amount:debit, partnerId:partnerId, kind:'withdrawal', description:String(r['البيان']||'').trim()};
       if(credit>0) return {date:date, amount:credit, partnerId:partnerId, kind:(typeText==='توزيع أرباح'?'distribution':'deposit'), description:String(r['البيان']||'').trim()};
-      return null;
+      return {__invalid:true, reason:'لا يوجد مبلغ في عمود مدين أو دائن'};
     };
   }
 
