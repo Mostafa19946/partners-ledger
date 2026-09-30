@@ -391,6 +391,115 @@
       }
     });
   }
+
+  // Current-account import needs one extra step the generic panel doesn't do:
+  // when a name in the sheet doesn't match any registered partner, let the admin
+  // map it to the right partner right here (or skip it) instead of editing the file.
+  function bindCurrentAccountImportPanel(){
+    var idPrefix = 'import-ca';
+    var fileInput = document.getElementById(idPrefix+'-file');
+    if(!fileInput) return;
+    var statusEl = document.getElementById(idPrefix+'-status');
+    var confirmBtn = document.getElementById(idPrefix+'-confirm');
+    var requiredCols = ['التاريخ','اسم الشريك','مدين','دائن'];
+    var lastRaw = null;
+    var pendingRows = null;
+    var overrides = {}; // normName(unmatched) -> partnerId ('' = skip these rows)
+
+    function currentPartnersList(){
+      var co = cache.companies.find(function(c){ return c.id==uiState.caCompanyId; });
+      return co ? co.partners : [];
+    }
+
+    function process(){
+      var partnersList = currentPartnersList();
+      var mapRow = mapCurrentAccountRowFactory(partnersList, overrides);
+      var valid = [], invalid = 0, reasons = {}, unmatched = {};
+      lastRaw.forEach(function(r){
+        var mapped = mapRow(r);
+        if(mapped && !mapped.__invalid) valid.push(mapped);
+        else if(mapped && mapped.__invalid){
+          invalid++;
+          reasons[mapped.reason] = (reasons[mapped.reason]||0)+1;
+          if(mapped.unmatchedName){
+            var k = normName(mapped.unmatchedName);
+            unmatched[k] = unmatched[k] || {name:mapped.unmatchedName, count:0};
+            unmatched[k].count++;
+          }
+        }
+      });
+      pendingRows = valid;
+
+      var reasonList = Object.keys(reasons).sort(function(a,b){ return reasons[b]-reasons[a]; }).slice(0,8)
+        .map(function(r){ return '<li>'+escapeHtml(r)+' ('+reasons[r]+' صف)</li>'; }).join('');
+
+      var unmatchedKeys = Object.keys(unmatched);
+      var mappingHtml = '';
+      if(unmatchedKeys.length){
+        var partnerOpts = '<option value="">— تجاهل هذه الحركات —</option>'+partnersList.map(function(p){
+          return '<option value="'+p.partnerId+'">'+escapeHtml(p.name)+'</option>';
+        }).join('');
+        var rowsHtml = unmatchedKeys.map(function(k){
+          var u = unmatched[k];
+          var sel = overrides[k] || '';
+          return '<div class="form-row" style="align-items:end;margin-bottom:8px;">'+
+            '<div class="field" style="margin:0;"><label>اسم في الملف: «'+escapeHtml(u.name)+'» ('+u.count+' صف)</label>'+
+              '<select class="ca-map-select" data-key="'+escapeHtml(k)+'">'+
+                partnerOpts.replace('value="'+sel+'"', 'value="'+sel+'" selected')+
+              '</select></div>'+
+          '</div>';
+        }).join('');
+        mappingHtml = '<div class="panel" style="margin-top:10px;"><div class="panel-head"><h3>ربط أسماء غير متطابقة بشركاء موجودين</h3></div><div class="panel-body">'+
+          '<div class="muted-note">الأسماء دي في الملف مش مطابقة لأي شريك مسجّل بالظبط. اختار الشريك الصحيح لكل اسم (أو سيبه "تجاهل")، والبرنامج هيحدّث العدد تلقائيًا.</div>'+
+          '<div style="margin-top:10px;">'+rowsHtml+'</div>'+
+        '</div></div>';
+      }
+
+      statusEl.innerHTML = '<div class="'+(valid.length?'ok-box':'error-box')+'">تم قراءة '+lastRaw.length+' صف — صالح للاستيراد: '+valid.length+
+        (invalid?('، تم تجاهله (بيانات ناقصة أو غير صحيحة): '+invalid):'')+'</div>'+
+        (reasonList ? '<div class="error-box" style="margin-top:8px;">أسباب الرفض:<ul style="margin:6px 0 0;padding-right:18px;">'+reasonList+'</ul></div>' : '')+
+        mappingHtml;
+
+      document.querySelectorAll('.ca-map-select').forEach(function(sel){
+        sel.addEventListener('change', function(){
+          overrides[sel.getAttribute('data-key')] = sel.value ? Number(sel.value) : '';
+          process();
+        });
+      });
+      confirmBtn.style.display = valid.length ? 'inline-flex' : 'none';
+    }
+
+    fileInput.addEventListener('change', async function(){
+      confirmBtn.style.display = 'none';
+      pendingRows = null; lastRaw = null; overrides = {};
+      var file = fileInput.files[0];
+      if(!file) return;
+      statusEl.innerHTML = '<div class="empty">جارِ القراءة…</div>';
+      try{
+        var raw = await readExcelRows(file);
+        if(!raw.length){ statusEl.innerHTML = '<div class="error-box">الملف فارغ</div>'; return; }
+        var missing = requiredCols.filter(function(c){ return !(c in raw[0]); });
+        if(missing.length){
+          statusEl.innerHTML = '<div class="error-box">أعمدة ناقصة في الملف: '+missing.join('، ')+'</div>';
+          return;
+        }
+        lastRaw = raw;
+        process();
+      }catch(e){
+        statusEl.innerHTML = '<div class="error-box">'+escapeHtml(e.message)+'</div>';
+      }
+    });
+    confirmBtn.addEventListener('click', async function(){
+      if(!pendingRows || !pendingRows.length) return;
+      confirmBtn.disabled = true; confirmBtn.textContent = 'جارِ الاستيراد…';
+      try{
+        await api('POST','/current-account/bulk', {companyId: uiState.caCompanyId, rows: pendingRows});
+        invalidateAndReload();
+      }catch(e){
+        alert(e.message); confirmBtn.disabled = false; confirmBtn.textContent = 'تأكيد الاستيراد';
+      }
+    });
+  }
   function mapRevenueRow(r){
     var date = excelToISODate(r['التاريخ']);
     var amount = excelToNumber(r['المبلغ']);
@@ -431,9 +540,10 @@
       usefulLifeYears: isNaN(life)?null:life, notes:String(r['ملاحظات']||'').trim()||null};
   }
   function normName(s){ return String(s==null?'':s).trim().replace(/\s+/g,' ').toLowerCase(); }
-  function mapCurrentAccountRowFactory(partnersList){
+  function mapCurrentAccountRowFactory(partnersList, overrides){
     var byName = {};
     partnersList.forEach(function(p){ byName[normName(p.name)] = p.partnerId; });
+    if(overrides){ Object.keys(overrides).forEach(function(k){ if(overrides[k]) byName[k] = overrides[k]; }); }
     return function(r){
       var date = excelToISODate(r['التاريخ']);
       var debit = excelToNumber(r['مدين']); if(isNaN(debit)) debit = 0;
@@ -442,7 +552,7 @@
       var partnerId = byName[normName(partnerNameRaw)];
       var typeText = String(r['النوع']||'').trim();
       if(!date && !partnerNameRaw && !debit && !credit) return null; // blank row, no diagnostic needed
-      if(partnerNameRaw && !partnerId) return {__invalid:true, reason:'اسم الشريك "'+partnerNameRaw+'" غير موجود بالظبط في هذه الشركة'};
+      if(partnerNameRaw && !partnerId) return {__invalid:true, reason:'اسم الشريك "'+partnerNameRaw+'" غير موجود بالظبط في هذه الشركة', unmatchedName:partnerNameRaw};
       if(!date) return {__invalid:true, reason:'تاريخ غير صالح'};
       if(debit>0 && credit>0) return {__invalid:true, reason:'الصف فيه مدين ودائن مع بعض في نفس الوقت'};
       if(debit>0) return {date:date, amount:debit, partnerId:partnerId, kind:'withdrawal', description:String(r['البيان']||'').trim()};
@@ -2073,13 +2183,7 @@
     bindImportPanel('import-inv', mapInventoryRow, ['اسم الصنف','الوحدة','الكمية','سعر الوحدة'], function(rowsToImport){
       return api('POST','/inventory/items/bulk', {projectId: uiState.invProjectId, rows: rowsToImport});
     });
-    (function(){
-      var caProj = cache.companies.find(function(c){ return c.id==uiState.caCompanyId; });
-      var partnersList = caProj ? caProj.partners : [];
-      bindImportPanel('import-ca', mapCurrentAccountRowFactory(partnersList), ['التاريخ','اسم الشريك','مدين','دائن'], function(rowsToImport){
-        return api('POST','/current-account/bulk', {companyId: uiState.caCompanyId, rows: rowsToImport});
-      });
-    })();
+    bindCurrentAccountImportPanel();
   }
 
   // ================= PARTNER =================
