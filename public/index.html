@@ -1093,11 +1093,11 @@
         '<div class="field"><label>الوصف / البيان</label><input type="text" id="nca-desc"></div>'+
       '</div><button class="btn" type="submit">إضافة الحركة</button></form>')+
     '</div></div>'+
+    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، البيان، مدين، دائن، النوع (اختياري). اكتب السحب في عمود مدين، والإيداع في عمود دائن. لو الدائن توزيع أرباح مش إيداع عادي، اكتب في عمود النوع: توزيع أرباح — والبرنامج بيحسب الرصيد تلقائي.')+
     '<div class="panel"><div class="panel-head"><h3>كل حركات الحساب الجاري (لإدارة الحذف والتعديل)</h3></div><div class="panel-body" style="padding:14px 0 0;">'+
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
-    '</div></div>'+
-    importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، البيان، مدين، دائن، النوع (اختياري). اكتب السحب في عمود مدين، والإيداع في عمود دائن. لو الدائن توزيع أرباح مش إيداع عادي، اكتب في عمود النوع: توزيع أرباح — والبرنامج بيحسب الرصيد تلقائي.');
+    '</div></div>';
   }
 
   function pageCurrentAccountLedger(partnersInCompany){
