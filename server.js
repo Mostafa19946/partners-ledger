@@ -288,6 +288,7 @@ async function initDb() {
     ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS status TEXT;
     ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS net_area NUMERIC;
     ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS garden_area NUMERIC;
+    ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS building TEXT;
     CREATE TABLE IF NOT EXISTS inventory_sales (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -962,12 +963,31 @@ app.get('/api/inventory/items', auth, async (req, res) => {
 });
 
 app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
-  const { projectId, name, unit, quantityIn, unitPrice, status, netArea, gardenArea } = req.body || {};
+  const { projectId, name, unit, quantityIn, unitPrice, status, netArea, gardenArea, building } = req.body || {};
   if (!projectId || !name || quantityIn === undefined) return res.status(400).json({ error: 'بيانات ناقصة' });
   const { rows } = await pool.query(
-    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-    [projectId, name, unit || null, quantityIn, unitPrice || 0, status || null, netArea || null, gardenArea || null]
+    'INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area, building) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+    [projectId, name, unit || null, quantityIn, unitPrice || 0, status || null, netArea || null, gardenArea || null, building || null]
   );
+  res.json(rows[0]);
+});
+
+// Edit an item's status / price / area / building (name, unit, quantity stay fixed here to avoid
+// silently breaking sale history; delete+recreate if those truly need to change)
+app.put('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE inventory_items SET
+       status = COALESCE($1, status),
+       unit_price = COALESCE($2, unit_price),
+       net_area = COALESCE($3, net_area),
+       garden_area = COALESCE($4, garden_area),
+       building = COALESCE($5, building)
+     WHERE id=$6 RETURNING *`,
+    [v(b.status), v(b.unitPrice), v(b.netArea), v(b.gardenArea), v(b.building), req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
   res.json(rows[0]);
 });
 
@@ -988,7 +1008,7 @@ app.get('/api/inventory/sales', auth, async (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
   if (!(await assertProjectAccess(req, res, projectId))) return;
   const { rows } = await pool.query(`
-    SELECT s.*, i.name AS item_name, i.unit AS item_unit, i.net_area AS item_net_area, i.garden_area AS item_garden_area
+    SELECT s.*, i.name AS item_name, i.unit AS item_unit, i.net_area AS item_net_area, i.garden_area AS item_garden_area, i.building AS item_building
     FROM inventory_sales s JOIN inventory_items i ON i.id = s.item_id
     WHERE s.project_id=$1 ORDER BY s.sale_date DESC, s.created_at DESC
   `, [projectId]);
@@ -1083,6 +1103,21 @@ app.post('/api/inventory/collections', auth, requireAdmin, async (req, res) => {
     'INSERT INTO sale_collections (sale_id, amount, collection_date, description) VALUES ($1,$2,$3,$4) RETURNING *',
     [saleId, amount, date, description || null]
   );
+  res.json(rows[0]);
+});
+
+app.put('/api/inventory/collections/:id', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE sale_collections SET
+       amount = COALESCE($1, amount),
+       collection_date = COALESCE($2, collection_date),
+       description = COALESCE($3, description)
+     WHERE id=$4 RETURNING *`,
+    [v(b.amount), v(b.date), v(b.description), req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
   res.json(rows[0]);
 });
 
@@ -1561,14 +1596,15 @@ app.post('/api/inventory/items/bulk', auth, requireAdmin, async (req, res) => {
   if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد' });
   try {
     await pool.query(
-      `INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area)
-       SELECT $1, u.name, u.unit, u.quantity_in, u.unit_price, u.status, u.net_area, u.garden_area
-       FROM UNNEST($2::text[], $3::text[], $4::numeric[], $5::numeric[], $6::text[], $7::numeric[], $8::numeric[])
-         AS u(name, unit, quantity_in, unit_price, status, net_area, garden_area)`,
+      `INSERT INTO inventory_items (project_id, name, unit, quantity_in, unit_price, status, net_area, garden_area, building)
+       SELECT $1, u.name, u.unit, u.quantity_in, u.unit_price, u.status, u.net_area, u.garden_area, u.building
+       FROM UNNEST($2::text[], $3::text[], $4::numeric[], $5::numeric[], $6::text[], $7::numeric[], $8::numeric[], $9::text[])
+         AS u(name, unit, quantity_in, unit_price, status, net_area, garden_area, building)`,
       [projectId,
        valid.map(r => r.name), valid.map(r => r.unit || null),
        valid.map(r => r.quantityIn), valid.map(r => r.unitPrice || 0),
-       valid.map(r => r.status || null), valid.map(r => r.netArea || null), valid.map(r => r.gardenArea || null)]
+       valid.map(r => r.status || null), valid.map(r => r.netArea || null), valid.map(r => r.gardenArea || null),
+       valid.map(r => r.building || null)]
     );
     res.json({ inserted: valid.length });
   } catch (e) {
