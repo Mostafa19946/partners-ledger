@@ -154,7 +154,8 @@
     companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{}, companyAssets:{} };
   var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
-    eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null };
+    eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
+    invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','شراء أصول','مصاريف دعاية وتسويق','أخرى'];
@@ -1180,7 +1181,18 @@
 
     var kindLabel = {deposit:'إيداع', withdrawal:'سحب', distribution:'توزيع أرباح'};
     var kindTag = {deposit:'dep', withdrawal:'wd', distribution:'dist'};
-    var rows = list.map(function(c){
+    var txPartnerFilterOptions = '<option value="all">كل الشركاء</option>'+partnersInCompany.map(function(p){
+      return '<option value="'+p.partnerId+'"'+(String(uiState.caTxPartnerFilter)===String(p.partnerId)?' selected':'')+'>'+escapeHtml(p.name)+'</option>';
+    }).join('');
+    var txKindFilterOptions = ['all','deposit','withdrawal','distribution'].map(function(k){
+      return '<option value="'+k+'"'+(uiState.caTxKindFilter===k?' selected':'')+'>'+(k==='all'?'كل الأنواع':kindLabel[k])+'</option>';
+    }).join('');
+    var filteredList = list.filter(function(c){
+      if(uiState.caTxPartnerFilter!=='all' && String(c.partner_id)!==String(uiState.caTxPartnerFilter)) return false;
+      if(uiState.caTxKindFilter!=='all' && c.kind!==uiState.caTxKindFilter) return false;
+      return true;
+    });
+    var rows = filteredList.map(function(c){
       var p = partnersInCompany.find(function(pp){return pp.partnerId==c.partner_id;});
       var isCredit = c.kind!=='withdrawal';
       return '<tr>'+selectColCell('current-account', c.id)+'<td>'+fmtDate(c.entry_date)+'</td><td>'+escapeHtml(p?p.name:'—')+'</td>'+
@@ -1188,7 +1200,7 @@
         '<td>'+escapeHtml(c.description||'—')+'</td>'+
         '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td>'+
         '<td><button class="del-x" data-del-ca="'+c.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="7" class="empty">لا توجد حركات على الحساب الجاري لهذه الشركة</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty">'+(list.length?'لا توجد حركات تطابق الفلتر المختار':'لا توجد حركات على الحساب الجاري لهذه الشركة')+'</td></tr>';
 
     return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2><p>حساب جاري كل شريك على مستوى الشركة، مش على مستوى مشروع معين.</p></div>'+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>الشركة</label><select id="ca-company-select">'+coOptions+'</select></div>'+
@@ -1207,7 +1219,11 @@
     '</div></div>'+
     importPanelHtml('import-ca', 'استيراد الحساب الجاري من إكسيل', 'التاريخ، اسم الشريك، البيان، مدين، دائن، النوع (اختياري). اكتب السحب في عمود مدين، والإيداع في عمود دائن. لو الدائن توزيع أرباح مش إيداع عادي، اكتب في عمود النوع: توزيع أرباح — والبرنامج بيحسب الرصيد تلقائي.')+
     '<div class="panel"><div class="panel-head"><h3>كل حركات الحساب الجاري (لإدارة الحذف والتعديل)</h3></div><div class="panel-body" style="padding:14px 0 0;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
+      '<div class="form-row" style="padding:0 18px;max-width:460px;">'+
+        '<div class="field"><label>فلتر الشريك</label><select id="ca-tx-partner-filter">'+txPartnerFilterOptions+'</select></div>'+
+        '<div class="field"><label>فلتر النوع</label><select id="ca-tx-kind-filter">'+txKindFilterOptions+'</select></div>'+
+      '</div>'+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>';
   }
@@ -1337,6 +1353,49 @@
     '</td></tr>';
   }
 
+  function pageCustomerAccountsHtml(sales, collectedBySale){
+    var byCustomer = {};
+    sales.forEach(function(s){
+      var key = (s.customer_name||'').trim() || '(بدون اسم عميل)';
+      if(!byCustomer[key]) byCustomer[key] = {name:key, sales:[], dues:0, collected:0};
+      var collected = collectedBySale[s.id]||0;
+      var dues = Number(s.sale_amount) + Number(s.garage_value||0) + Number(s.maintenance_value||0) + Number(s.utilities_value||0);
+      byCustomer[key].sales.push(s);
+      byCustomer[key].dues += dues;
+      byCustomer[key].collected += collected + Number(s.garage_collected||0) + Number(s.maintenance_collected||0) + Number(s.utilities_collected||0);
+    });
+    var customers = Object.keys(byCustomer).map(function(k){ return byCustomer[k]; })
+      .sort(function(a,b){ return a.name.localeCompare(b.name,'ar'); });
+
+    var rows = customers.map(function(cust){
+      var remaining = cust.dues - cust.collected;
+      var rowId = 'cust-detail-'+cust.name.replace(/[^a-zA-Z0-9\u0600-\u06FF]/g,'_');
+      var unitRows = cust.sales.map(function(s){
+        var collected = collectedBySale[s.id]||0;
+        var rem = Number(s.sale_amount) - collected;
+        return '<tr><td>'+escapeHtml(s.building_no||'—')+'</td><td>'+escapeHtml(s.item_name)+'</td>'+
+          '<td class="amt">'+money(s.sale_amount)+'</td><td class="amt credit">'+money(collected)+'</td>'+
+          '<td class="amt '+(rem>0.001?'debit':'')+'">'+money(rem)+'</td>'+
+          '<td><button class="btn ghost sm" data-collect-sale="'+s.id+'" data-remaining="'+rem.toFixed(2)+'">تحصيل</button></td></tr>';
+      }).join('');
+      return '<tr class="ledger-month-row" data-ledger-toggle="'+rowId+'" style="cursor:pointer;">'+
+        '<td><span class="ledger-caret" id="caret-'+rowId+'">▸</span> '+escapeHtml(cust.name)+'</td>'+
+        '<td class="mono">'+cust.sales.length+'</td>'+
+        '<td class="amt">'+money(cust.dues)+'</td>'+
+        '<td class="amt credit">'+money(cust.collected)+'</td>'+
+        '<td class="amt '+(remaining>0.001?'debit':'credit')+'">'+money(remaining)+'</td></tr>'+
+        '<tr id="'+rowId+'" class="ledger-detail-row" style="display:none;"><td colspan="5" style="padding:10px 14px;background:#faf7ea;">'+
+          '<table><thead><tr><th>العمارة</th><th>الوحدة</th><th>قيمة الوحدة</th><th>المحصّل</th><th>المتبقي</th><th></th></tr></thead><tbody>'+unitRows+'</tbody></table>'+
+        '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">لا يوجد عملاء مسجلين بعد</td></tr>';
+
+    return '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">حسابات العملاء</h2></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إجمالي المستحقات والمحصّل لكل عميل</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>اسم العميل</th><th>عدد الوحدات</th><th>إجمالي المستحقات</th><th>إجمالي المحصّل</th><th>المتبقي</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="muted-note">اضغط على اسم العميل لعرض وحداته، وزرار "تحصيل" بجنب كل وحدة لإضافة دفعة جديدة مباشرة.</div>';
+  }
+
   function pageInventory(){
     if(cache.projects.length===0) return '<div class="page-head"><h2>المخزون والتحصيل</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
     var pid = uiState.invProjectId;
@@ -1350,7 +1409,22 @@
     var collectedBySale = {};
     collections.forEach(function(c){ collectedBySale[c.sale_id] = (collectedBySale[c.sale_id]||0) + Number(c.amount); });
 
-    var itemRows = items.map(function(it){
+    // ---- Item filters: status + building ----
+    var statusValues = Array.from(new Set(items.map(function(it){return it.status;}).filter(Boolean))).sort();
+    var buildingValues = Array.from(new Set(items.map(function(it){return it.building;}).filter(Boolean))).sort();
+    var statusFilterOptions = '<option value="all">كل الحالات</option>'+statusValues.map(function(s){
+      return '<option value="'+escapeHtml(s)+'"'+(uiState.invStatusFilter===s?' selected':'')+'>'+escapeHtml(s)+'</option>';
+    }).join('');
+    var buildingFilterOptions = '<option value="all">كل العمارات</option>'+buildingValues.map(function(b){
+      return '<option value="'+escapeHtml(b)+'"'+(uiState.invBuildingFilter===b?' selected':'')+'>'+escapeHtml(b)+'</option>';
+    }).join('');
+    var filteredItems = items.filter(function(it){
+      if(uiState.invStatusFilter!=='all' && (it.status||'')!==uiState.invStatusFilter) return false;
+      if(uiState.invBuildingFilter!=='all' && (it.building||'')!==uiState.invBuildingFilter) return false;
+      return true;
+    });
+
+    var itemRows = filteredItems.map(function(it){
       var sold = soldByItem[it.id]||0;
       var remainingQty = Number(it.quantity_in) - sold;
       return '<tr>'+selectColCell('inv-items', it.id)+'<td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
@@ -1363,7 +1437,7 @@
         '<td><input type="number" class="ei-garden-area" data-item="'+it.id+'" value="'+(it.garden_area!=null?it.garden_area:'')+'" min="0" step="0.01" style="width:90px;"></td>'+
         '<td><button class="btn ghost sm" data-save-item="'+it.id+'">حفظ</button></td>'+
         '<td><button class="del-x" data-del-item="'+it.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="12" class="empty">لا توجد أصناف مخزون لهذا المشروع بعد</td></tr>';
+    }).join('') || '<tr><td colspan="12" class="empty">'+(items.length?'لا توجد أصناف تطابق الفلتر المختار':'لا توجد أصناف مخزون لهذا المشروع بعد')+'</td></tr>';
 
     var editingSaleForOptions = uiState.editingSaleId ? sales.find(function(s){return s.id===uiState.editingSaleId;}) : null;
     var NO_BUILDING = '—';
@@ -1451,7 +1525,11 @@
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
 
     '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('inv-items')+'</div>'+
+      '<div class="form-row" style="padding:0 18px;max-width:460px;">'+
+        '<div class="field"><label>فلتر الحالة</label><select id="inv-status-filter">'+statusFilterOptions+'</select></div>'+
+        '<div class="field"><label>فلتر العمارة</label><select id="inv-building-filter">'+buildingFilterOptions+'</select></div>'+
+      '</div>'+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('inv-items')+'</div>'+
       '<table><thead><tr>'+selectColHeader('inv-items')+'<th>الصنف</th><th>الوحدة</th><th>العمارة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
       '<div class="muted-note" style="padding:8px 18px;">تقدر تعدّل العمارة، الحالة، السعر، والمساحة مباشرة في الجدول واضغط "حفظ".</div>'+
     '</div></div>'+
@@ -1514,8 +1592,12 @@
           '<div class="field"><label>فروق تحصيل</label><input type="number" id="ns-diff" step="0.01" value="'+g('collection_diff',0)+'"></div>'+
         '</div>'+
         '<div class="form-row three">'+
+          '<div class="field"><label>نسبة وديعة الصيانة % (اختياري)</label><input type="number" id="ns-maint-pct" min="0" max="100" step="0.01" placeholder="مثال: 5"></div>'+
           '<div class="field"><label>دفعة الصيانة</label><input type="number" id="ns-maint-value" min="0" step="0.01" value="'+g('maintenance_value',0)+'"></div>'+
           '<div class="field"><label>المحصل من دفعة الصيانة</label><input type="number" id="ns-maint-collected" min="0" step="0.01" value="'+g('maintenance_collected',0)+'"></div>'+
+        '</div>'+
+        '<div class="muted-note" style="margin-bottom:10px;">اكتب نسبة وديعة الصيانة (مثلًا 5%) وهتتحسب "دفعة الصيانة" أوتوماتيك من قيمة الوحدة — وتقدر تعدّلها يدويًا بعد كده لو حبيت.</div>'+
+        '<div class="form-row">'+
           '<div class="field"><label>ملاحظات</label><input type="text" id="ns-desc" value="'+escapeHtml(g('description'))+'"></div>'+
         '</div>'+
         '<div class="form-row three">'+
@@ -1527,6 +1609,8 @@
         '</form>';
       })())+
     '</div></div>'+
+
+    pageCustomerAccountsHtml(sales, collectedBySale)+
 
     '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تفصيل التحصيل على الفترات</h2></div>'+
     '<div class="period-toggle">'+periodChips+'</div>'+
@@ -1993,8 +2077,13 @@
       });
     });
 
+    var caTxPartnerFilterEl = document.getElementById('ca-tx-partner-filter');
+    if(caTxPartnerFilterEl) caTxPartnerFilterEl.addEventListener('change', function(){ uiState.caTxPartnerFilter = caTxPartnerFilterEl.value; renderAdminMain(); });
+    var caTxKindFilterEl = document.getElementById('ca-tx-kind-filter');
+    if(caTxKindFilterEl) caTxKindFilterEl.addEventListener('change', function(){ uiState.caTxKindFilter = caTxKindFilterEl.value; renderAdminMain(); });
+
     var cps = document.getElementById('ca-company-select');
-    if(cps) cps.addEventListener('change', function(){ uiState.caCompanyId = Number(cps.value); uiState.caLedgerYear = null; loadAdminPage(); });
+    if(cps) cps.addEventListener('change', function(){ uiState.caCompanyId = Number(cps.value); uiState.caLedgerYear = null; uiState.caTxPartnerFilter='all'; uiState.caTxKindFilter='all'; loadAdminPage(); });
     var caLedgerPartnerEl = document.getElementById('ca-ledger-partner');
     if(caLedgerPartnerEl) caLedgerPartnerEl.addEventListener('change', function(){
       uiState.caLedgerPartnerId = caLedgerPartnerEl.value==='all' ? 'all' : Number(caLedgerPartnerEl.value); uiState.caLedgerYear = null; loadAdminPage(true);
@@ -2038,8 +2127,13 @@
     var rps = document.getElementById('report-project-select');
     if(rps) rps.addEventListener('change', function(){ uiState.reportProjectId = Number(rps.value); loadAdminPage(); });
 
+    var invStatusFilterEl = document.getElementById('inv-status-filter');
+    if(invStatusFilterEl) invStatusFilterEl.addEventListener('change', function(){ uiState.invStatusFilter = invStatusFilterEl.value; renderAdminMain(); });
+    var invBuildingFilterEl = document.getElementById('inv-building-filter');
+    if(invBuildingFilterEl) invBuildingFilterEl.addEventListener('change', function(){ uiState.invBuildingFilter = invBuildingFilterEl.value; renderAdminMain(); });
+
     var ips = document.getElementById('inv-project-select');
-    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); uiState.editingSaleId=null; loadAdminPage(); });
+    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); uiState.editingSaleId=null; uiState.invStatusFilter='all'; uiState.invBuildingFilter='all'; loadAdminPage(); });
     var aif = document.getElementById('add-item-form');
     if(aif) aif.addEventListener('submit', async function(ev){
       ev.preventDefault();
@@ -2100,6 +2194,18 @@
     }
     if(nsBuildingSelect) nsBuildingSelect.addEventListener('change', syncUnitFromBuilding);
     if(nsItem) nsItem.addEventListener('change', syncPriceAndBuildingFromItem);
+
+    var nsMaintPct = document.getElementById('ns-maint-pct');
+    var nsMaintValue = document.getElementById('ns-maint-value');
+    var nsAmount = document.getElementById('ns-amount');
+    function recalcMaintenance(){
+      if(!nsMaintPct || !nsMaintValue || !nsAmount) return;
+      var pct = parseFloat(nsMaintPct.value);
+      var amt = parseFloat(nsAmount.value);
+      if(!isNaN(pct) && pct>0 && !isNaN(amt)){ nsMaintValue.value = (amt*pct/100).toFixed(2); }
+    }
+    if(nsMaintPct) nsMaintPct.addEventListener('input', recalcMaintenance);
+    if(nsAmount) nsAmount.addEventListener('input', recalcMaintenance);
     var asf = document.getElementById('add-sale-form');
     if(asf) asf.addEventListener('submit', async function(ev){
       ev.preventDefault();
