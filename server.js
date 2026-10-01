@@ -513,6 +513,14 @@ app.post('/api/companies', auth, requireAdmin, async (req, res) => {
   res.json(rows[0]);
 });
 
+app.put('/api/companies/:id', auth, requireAdmin, async (req, res) => {
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'اسم الشركة مطلوب' });
+  const { rows } = await pool.query('UPDATE companies SET name=$1 WHERE id=$2 RETURNING *', [name.trim(), req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
+});
+
 app.delete('/api/companies/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('UPDATE projects SET company_id=NULL WHERE company_id=$1', [req.params.id]);
   await pool.query('DELETE FROM companies WHERE id=$1', [req.params.id]);

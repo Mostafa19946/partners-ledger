@@ -42,7 +42,7 @@
   .ok-box{background:#e3efe6;border:1px solid #b9d7c3;color:var(--credit);padding:10px 12px;border-radius:var(--radius);font-size:13px;margin-bottom:16px;}
   .hint-creds{margin-top:20px;padding-top:16px;border-top:1px dashed var(--line);font-size:12px;color:var(--ink-soft);line-height:1.8;}
   .shell{display:flex;min-height:100vh;}
-  .sidebar{width:230px;flex:none;background:var(--teal-deep);color:#e9e4d4;padding:24px 18px;display:flex;flex-direction:column;}
+  .sidebar{width:230px;flex:none;background:var(--teal-deep);color:#e9e4d4;padding:24px 18px;display:flex;flex-direction:column;position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;}
   .sidebar .brand{color:#fff;margin-bottom:2px;}
   .sidebar .brand .mark{border-color:var(--brass-soft);color:var(--brass-soft);}
   .sidebar .brand h1{color:#fff;font-size:18px;}
@@ -67,6 +67,7 @@
   .ea-grand td,.ea-grand td:first-child{background:var(--teal-deep);color:#fff;font-weight:900;}
   .ea-grand .ea-zero{color:#8fa9a3;}
   .nav-item.sub{margin-right:22px;padding:8px 12px;font-size:13px;border-right:2px solid rgba(255,255,255,.18);border-radius:0 var(--radius) var(--radius) 0;}
+  .sidebar-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.12);}
   .sidebar-foot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px;}
   .logout-link{color:#e2bdb8;font-size:13px;cursor:pointer;background:none;border:none;font-family:inherit;padding:0;text-align:right;}
   .logout-link:hover{text-decoration:underline;}
@@ -128,10 +129,11 @@
   .remaining-zero{color:var(--ink-soft);}
   @media (max-width:860px){
     .shell{flex-direction:column;}
-    .sidebar{width:100%;flex-direction:row;align-items:center;padding:14px 18px;flex-wrap:wrap;}
+    .sidebar{width:100%;flex-direction:row;align-items:center;padding:14px 18px;flex-wrap:wrap;position:static;height:auto;overflow-y:visible;}
     .sidebar .brand{margin-bottom:0;margin-left:auto;order:1;}
     .who{display:none;}
     .sidebar-foot{margin-top:0;order:2;flex-direction:row;}
+    .sidebar-top{order:0;margin-bottom:0;padding-bottom:0;border-bottom:none;}
     .nav-row{display:flex;gap:6px;flex-wrap:wrap;order:3;width:100%;margin-top:10px;}
     .main{padding:20px 16px;}
   }
@@ -673,10 +675,10 @@
       return '<div class="nav-item'+(n.sub?' sub':'')+(adminTab===n.key?' active':'')+'" data-nav="'+n.key+'"><span>'+n.icon+'</span><span>'+n.label+'</span></div>';
     }).join('');
     return '<div class="shell"><div class="sidebar">'+
+      '<div class="sidebar-top"><button class="logout-link" id="refresh-btn" style="color:#cdd6cd;">↻ تحديث</button><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
       '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
       '<div class="who">مسجل الدخول باسم<b>'+escapeHtml(currentUser.name)+'</b></div>'+
       '<div class="nav-row">'+nav+'</div>'+
-      '<div class="sidebar-foot"><button class="logout-link" id="refresh-btn" style="color:#cdd6cd;margin-bottom:8px;">↻ تحديث البيانات</button><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
     '</div><div class="main" id="main-area"><div class="empty">جارِ التحميل…</div></div></div>';
   }
   function bindAdminShell(){
@@ -966,7 +968,8 @@
       }).join('') || '<tr><td colspan="4" class="empty">لا توجد مشاريع لهذه الشركة بعد</td></tr>' : '';
 
       return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(co.name)+'</h3>'+
-        '<button class="btn danger sm" data-del-company="'+co.id+'">حذف الشركة</button></div>'+
+        '<div><button class="btn ghost sm" data-rename-company="'+co.id+'" data-current-name="'+escapeHtml(co.name)+'" style="margin-left:8px;">تعديل الاسم</button>'+
+        '<button class="btn danger sm" data-del-company="'+co.id+'">حذف الشركة</button></div></div>'+
         '<div class="panel-body">'+
           '<table><thead><tr><th>الشريك</th><th>النسبة % في الشركة</th><th>الرصيد الافتتاحي</th><th></th><th></th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
           '<div class="pct-total '+(Math.abs(pctTotal-100)<0.001?'ok':'bad')+'" style="margin-top:10px;">إجمالي النسب: '+pctTotal+'%</div>'+
@@ -1863,6 +1866,18 @@
       try{ await api('POST','/companies',{name:name}); invalidateAndReload(); }
       catch(e){ alert(e.message); }
     });
+    document.querySelectorAll('[data-rename-company]').forEach(function(btn){
+      btn.addEventListener('click', async function(){
+        var id = btn.getAttribute('data-rename-company');
+        var current = btn.getAttribute('data-current-name');
+        var name = prompt('اسم الشركة الجديد:', current);
+        if(name===null) return;
+        name = name.trim();
+        if(!name || name===current) return;
+        try{ await api('PUT','/companies/'+id,{name:name}); invalidateAndReload(); }
+        catch(e){ alert(e.message); }
+      });
+    });
     document.querySelectorAll('[data-del-company]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         if(!confirm('حذف الشركة؟ المشاريع التابعة لها هتفضل موجودة بس من غير شركة محددة.')) return;
@@ -2389,11 +2404,11 @@
   // ================= PARTNER =================
   function renderPartnerShell(){
     return '<div class="shell"><div class="sidebar">'+
+      '<div class="sidebar-top"><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
       '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
       '<div class="who">مرحبًا<b>'+escapeHtml(currentUser.name)+'</b></div>'+
       '<div class="sidebar-foot">'+
         '<button class="btn ghost sm" id="p-settings-btn">تغيير كلمة المرور</button>'+
-        '<button class="logout-link" id="logout-btn">تسجيل الخروج</button>'+
       '</div>'+
     '</div><div class="main" id="main-area"><div class="empty">جارِ التحميل…</div></div></div>';
   }
