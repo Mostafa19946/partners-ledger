@@ -160,7 +160,7 @@
     invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
-  var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','شراء أصول','مصاريف دعاية وتسويق','أخرى'];
+  var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','مصاريف تسويقية','مصاريف استثمارية','مصاريف تمويلية','شراء أصول','أخرى'];
 
   // ---- Expense items tree helpers ----
   function eiCount(nodes){ return (nodes||[]).reduce(function(t,n){ return t+1+eiCount(n.c); },0); }
@@ -985,17 +985,27 @@
             '<div class="grid-stats">'+
               '<div class="stat"><div class="label">إجمالي إيرادات كل المشاريع</div><div class="val credit">'+money(rep.totalProjectRevenue)+'</div></div>'+
               '<div class="stat"><div class="label">إجمالي تكاليف المشاريع</div><div class="val debit">'+money(rep.totalProjectExpense)+'</div></div>'+
-              '<div class="stat"><div class="label">مصاريف الشركة العمومية والإدارية</div><div class="val debit">'+money(rep.companyExpenses)+'</div></div>'+
-              '<div class="stat"><div class="label">إجمالي كل المصاريف</div><div class="val debit">'+money(rep.grandTotalExpenses)+'</div></div>'+
+              '<div class="stat"><div class="label">مصاريف الشركة العمومية/الإدارية/التسويقية/الاستثمارية/التمويلية</div><div class="val debit">'+money(rep.companyExpenses)+'</div></div>'+
+              '<div class="stat"><div class="label">إجمالي كل المصاريف (مشاريع + شركة)</div><div class="val debit">'+money(rep.grandTotalExpenses)+'</div></div>'+
               '<div class="stat"><div class="label">صافي ربح الشركة الكلي</div><div class="val '+(rep.grandNet>=0?'credit':'debit')+'">'+money(rep.grandNet)+'</div></div>'+
               '<div class="stat"><div class="label">إجمالي تكلفة الأصول الثابتة</div><div class="val teal">'+money(rep.totalAssetsCost)+'</div></div>'+
               '<div class="stat"><div class="label">القيمة الدفترية الحالية للأصول</div><div class="val credit">'+money(rep.totalAssetsBookValue)+'</div></div>'+
             '</div>'+
-            '<table><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th></tr></thead><tbody>'+projectRows+'</tbody></table>'
+            '<table style="margin-bottom:18px;"><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th></tr></thead><tbody>'+projectRows+'</tbody></table>'+
+            '<h3 style="margin:18px 0 10px;font-size:15px;color:var(--teal-deep);">نصيب كل شريك من الإيرادات والمصروفات</h3>'+
+            '<div style="overflow-x:auto;"><table><thead><tr><th>الشريك</th><th>النسبة %</th><th>نصيبه من الإيرادات</th><th>نصيبه من المصروفات</th><th>نصيبه من صافي الربح</th><th>رصيد حسابه الجاري</th></tr></thead><tbody>'+
+              (rep.partners.length ? rep.partners.map(function(p){
+                return '<tr><td>'+escapeHtml(p.name)+'</td><td class="mono">'+p.percentage+'%</td>'+
+                  '<td class="amt credit">'+money(p.shareOfRevenue)+'</td>'+
+                  '<td class="amt debit">'+money(p.shareOfExpenses)+'</td>'+
+                  '<td class="amt '+(p.shareOfNet>=0?'credit':'debit')+'">'+money(p.shareOfNet)+'</td>'+
+                  '<td class="amt '+(p.currentAccountBalance>=0?'credit':'debit')+'">'+money(p.currentAccountBalance)+' '+balanceTag(p.currentAccountBalance)+'</td></tr>';
+              }).join('') : '<tr><td colspan="6" class="empty">لا يوجد شركاء في هذه الشركة</td></tr>')+
+            '</tbody></table></div>'
           ) : '')+
 
-          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">المصاريف العمومية والإدارية الخاصة بالشركة</h3>'+
-          '<div class="muted-note">مصاريف عامة للشركة نفسها (زي إدارة عمومية، شراء أصول، دعاية وتسويق) — منفصلة عن تكاليف كل مشروع.</div>'+
+          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة (عمومية / إدارية / تسويقية / استثمارية / تمويلية)</h3>'+
+          '<div class="muted-note">مصاريف عامة للشركة نفسها، منفصلة تمامًا عن تكاليف كل مشروع (اللي بتتسجل من صفحة "الإيرادات والمصروفات" لكل مشروع على حدة). إجمالي كل المصاريف فوق بيجمع المستويين مع بعض.</div>'+
           '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(tableKey)+'</div>'+
           '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+expRows+'</tbody></table></div>'+
           '<form class="add-co-expense-form" data-company="'+co.id+'" style="margin-top:14px;">'+

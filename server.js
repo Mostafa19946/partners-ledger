@@ -351,6 +351,20 @@ async function initDb() {
     }
   }
 
+  // Make sure these top-level categories exist even on databases seeded before they were added
+  {
+    const allNames = (await pool.query('SELECT name FROM expense_items')).rows.map(r => normCat(r.name));
+    for (const extraName of ['مصاريف استثمارية', 'مصاريف تمويلية']) {
+      if (!allNames.includes(normCat(extraName))) {
+        const maxOrder = (await pool.query(
+          'SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM expense_items WHERE parent_id IS NULL'
+        )).rows[0].n;
+        await pool.query('INSERT INTO expense_items (name, parent_id, sort_order) VALUES ($1, NULL, $2)', [extraName, maxOrder]);
+        console.log(`Seeded extra top-level expense category: ${extraName}`);
+      }
+    }
+  }
+
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM users');
   if (rows[0].c === 0) {
     const hash = await bcrypt.hash(ADMIN_PASSWORD, 10);
@@ -743,11 +757,14 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
   `, [companyId])).rows;
   const caMap = {};
   caRows.forEach(r => { caMap[r.partner_id] = Number(r.balance); });
+  const grandTotalExpenses = companyExpenses + totalProjectExpense;
   const partners = shareRows.map(s => ({
     partnerId: s.partner_id,
     name: s.name,
     percentage: Number(s.percentage),
     openingBalance: Number(s.opening_balance),
+    shareOfRevenue: totalProjectRevenue * (Number(s.percentage) / 100),
+    shareOfExpenses: grandTotalExpenses * (Number(s.percentage) / 100),
     shareOfNet: grandNet * (Number(s.percentage) / 100),
     currentAccountBalance: (caMap[s.partner_id] || 0) + Number(s.opening_balance)
   }));
@@ -760,7 +777,7 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
     partners,
     totalProjectRevenue,
     totalProjectExpense,
-    grandTotalExpenses: companyExpenses + totalProjectExpense,
+    grandTotalExpenses,
     grandNet,
     totalAssetsCost,
     totalAssetsBookValue
