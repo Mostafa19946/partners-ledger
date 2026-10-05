@@ -915,6 +915,10 @@ app.get('/api/entries', auth, async (req, res) => {
     'SELECT * FROM entries WHERE project_id=$1 ORDER BY entry_date DESC, created_at DESC',
     [projectId]
   );
+  if (req.user.role === 'partner') {
+    // partners see expenses by main item only (via /api/me/expense-summary), never the line-level detail
+    return res.json(rows.map(r => (r.kind === 'expense' ? { ...r, description: null, category: null } : r)));
+  }
   res.json(rows);
 });
 
@@ -955,7 +959,7 @@ app.get('/api/expense-payments', auth, async (req, res) => {
     WHERE e.project_id = $1
     ORDER BY ep.payment_date DESC, ep.created_at DESC
   `, [projectId]);
-  res.json(rows);
+  res.json(req.user.role === 'partner' ? rows.map(r => ({ ...r, description: null })) : rows);
 });
 
 app.post('/api/expense-payments', auth, requireAdmin, async (req, res) => {
@@ -1296,6 +1300,103 @@ app.get('/api/me/companies', auth, async (req, res) => {
     ORDER BY c.id
   `, [req.user.partnerId]);
   res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// Partner-facing expense summary: MAIN items only. Level 1 = the chart's groups,
+// level 2 = their direct items; anything deeper (individual clients, salary lines...)
+// is rolled up into its level-2 item so the detail never reaches a partner's screen.
+// Returns the totals plus the partner's own share (company % or project %).
+// ---------------------------------------------------------------------------
+const UNCLASSIFIED_LABEL = 'بنود أخرى غير مصنفة';
+
+async function rollupForPartner(categoryTotals, pct) {
+  const items = (await pool.query('SELECT id, name, parent_id FROM expense_items ORDER BY sort_order, id')).rows;
+  const byId = {}, byNorm = {};
+  items.forEach((it, idx) => { it.rank = idx; byId[it.id] = it; byNorm[normCat(it.name)] = it; });
+  const pathOf = (node) => {
+    const path = []; let cur = node, guard = 0;
+    while (cur && guard++ < 50) { path.unshift(cur); cur = cur.parent_id == null ? null : byId[cur.parent_id]; }
+    return path;
+  };
+  const groups = {};
+  categoryTotals.forEach(({ category, total }) => {
+    const node = byNorm[normCat(category)];
+    const path = node ? pathOf(node) : [];
+    const root = path[0] || null, child = path[1] || null;
+    const key = root ? 'r' + root.id : 'x';
+    const g = groups[key] || (groups[key] = { name: root ? root.name : UNCLASSIFIED_LABEL, rank: root ? root.rank : 1e9, total: 0, direct: 0, children: {} });
+    g.total += total;
+    if (child) {
+      const c = g.children[child.id] || (g.children[child.id] = { name: child.name, rank: child.rank, total: 0 });
+      c.total += total;
+    } else {
+      g.direct += total;
+    }
+  });
+  const nonZero = (n) => Math.abs(n) >= 0.005;
+  const out = Object.values(groups).sort((a, b) => a.rank - b.rank).filter(g => nonZero(g.total)).map(g => ({
+    name: g.name, total: g.total, myShare: g.total * pct,
+    direct: g.direct, directShare: g.direct * pct,
+    children: Object.values(g.children).sort((a, b) => a.rank - b.rank).filter(c => nonZero(c.total))
+      .map(c => ({ name: c.name, total: c.total, myShare: c.total * pct }))
+  }));
+  const total = out.reduce((t, g) => t + g.total, 0);
+  return { groups: out, total, myShare: total * pct };
+}
+
+app.get('/api/me/expense-summary', auth, async (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
+  try {
+    const companyId = parseInt(req.query.companyId, 10);
+    const projectId = parseInt(req.query.projectId, 10);
+    if (companyId) {
+      const cp = (await pool.query(
+        `SELECT cp.percentage, c.name FROM company_partners cp JOIN companies c ON c.id = cp.company_id
+         WHERE cp.company_id=$1 AND cp.partner_id=$2`, [companyId, req.user.partnerId]
+      )).rows[0];
+      if (!cp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
+      const rows = (await pool.query(`
+        SELECT category, source, SUM(amount) AS total FROM (
+          SELECT COALESCE(NULLIF(TRIM(e.category), ''), 'أخرى') AS category, 'project' AS source, e.amount
+          FROM entries e JOIN projects p ON p.id = e.project_id
+          WHERE e.kind = 'expense' AND p.company_id = $1
+          UNION ALL
+          SELECT COALESCE(NULLIF(TRIM(category), ''), 'أخرى'), 'company', amount
+          FROM company_expenses WHERE company_id = $1
+        ) t GROUP BY category, source
+      `, [companyId])).rows;
+      const byCat = {};
+      let projectCostsTotal = 0, companyLevelTotal = 0;
+      rows.forEach(r => {
+        const t = Number(r.total);
+        byCat[r.category] = (byCat[r.category] || 0) + t;
+        if (r.source === 'project') projectCostsTotal += t; else companyLevelTotal += t;
+      });
+      const pct = Number(cp.percentage) / 100;
+      const roll = await rollupForPartner(Object.keys(byCat).map(category => ({ category, total: byCat[category] })), pct);
+      return res.json({ scope: 'company', name: cp.name, percentage: Number(cp.percentage),
+        projectCostsTotal, companyLevelTotal, ...roll });
+    }
+    if (projectId) {
+      const pp = (await pool.query(
+        `SELECT pp.percentage, pr.name FROM project_partners pp JOIN projects pr ON pr.id = pp.project_id
+         WHERE pp.project_id=$1 AND pp.partner_id=$2`, [projectId, req.user.partnerId]
+      )).rows[0];
+      if (!pp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذا المشروع' });
+      const rows = (await pool.query(`
+        SELECT COALESCE(NULLIF(TRIM(category), ''), 'أخرى') AS category, SUM(amount) AS total
+        FROM entries WHERE kind = 'expense' AND project_id = $1 GROUP BY 1
+      `, [projectId])).rows;
+      const pct = Number(pp.percentage) / 100;
+      const roll = await rollupForPartner(rows.map(r => ({ category: r.category, total: Number(r.total) })), pct);
+      return res.json({ scope: 'project', name: pp.name, percentage: Number(pp.percentage), ...roll });
+    }
+    res.status(400).json({ error: 'companyId أو projectId مطلوب' });
+  } catch (e) {
+    console.error('partner expense summary failed', e);
+    res.status(500).json({ error: 'تعذر تحميل ملخص المصاريف' });
+  }
 });
 
 app.get('/api/report/:projectId', auth, async (req, res) => {

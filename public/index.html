@@ -151,7 +151,7 @@
   var adminTab = 'companies';
   var partnerActiveProject = null;
   var partnerActiveCompany = null;
-  var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], meCompanies:[], report:{},
+  var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], meCompanies:[], meExpCompany:null, meExpProject:null, report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
     companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{}, companyAssets:{} };
   var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
@@ -2549,7 +2549,10 @@
       } else {
         calls.push(null, []);
       }
+      calls.push(partnerActiveCompany ? api('GET','/me/expense-summary?companyId='+partnerActiveCompany) : null);
+      calls.push(partnerActiveProject ? api('GET','/me/expense-summary?projectId='+partnerActiveProject) : null);
       var results = await Promise.all(calls);
+      cache.meExpCompany = results[8]; cache.meExpProject = results[9];
       var rep = results[0], entries = results[1], expPayments = results[2],
         invItems = results[3], invSales = results[4], invCollections = results[5],
         ledger = results[6], caTx = results[7];
@@ -2565,6 +2568,23 @@
       main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
     }
   }
+  function partnerExpenseTableHtml(sum, title){
+    if(!sum) return '';
+    var rows = sum.groups.map(function(g){
+      var head = '<tr class="ea-g1"><td>'+escapeHtml(g.name)+'</td><td class="amt">'+money(g.total)+'</td><td class="amt teal">'+money(g.myShare)+'</td></tr>';
+      var kids = g.children.map(function(c){
+        return '<tr><td style="padding-right:30px;">'+escapeHtml(c.name)+'</td><td class="amt">'+money(c.total)+'</td><td class="amt">'+money(c.myShare)+'</td></tr>';
+      }).join('');
+      var direct = (g.children.length && Math.abs(g.direct)>=0.005)
+        ? '<tr><td style="padding-right:30px;color:var(--ink-soft);">مصروفات مسجلة على «'+escapeHtml(g.name)+'» مباشرة</td><td class="amt">'+money(g.direct)+'</td><td class="amt">'+money(g.directShare)+'</td></tr>' : '';
+      return head+kids+direct;
+    }).join('') || '<tr><td colspan="3" class="empty">لا توجد مصاريف مسجلة بعد</td></tr>';
+    return '<div class="panel"><div class="panel-head"><h3>'+title+'</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>البند</th><th>الإجمالي</th><th>نصيبك ('+sum.percentage+'%)</th></tr></thead><tbody>'+rows+
+      '<tr class="ea-grand"><td>الإجمالي</td><td class="amt">'+money(sum.total)+'</td><td class="amt">'+money(sum.myShare)+'</td></tr></tbody></table>'+
+    '</div></div>';
+  }
+
   function renderPartnerDashboard(rep, ledger, caTx, entries, expPayments, invItems, invSales, invCollections){
     var myShare = rep ? (rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {}) : {};
     var activeProj = cache.meProjects.find(function(p){return p.id===partnerActiveProject;});
@@ -2576,11 +2596,10 @@
       return '<div class="chip'+(c.id===partnerActiveCompany?' active':'')+'" data-company="'+c.id+'">'+escapeHtml(c.name)+'</div>';
     }).join('');
 
-    var entriesRows = entries.map(function(e){
-      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td><span class="tag '+(e.kind==='revenue'?'rev':'exp')+'">'+(e.kind==='revenue'?'إيراد':'مصروف')+'</span></td>'+
-        '<td>'+escapeHtml(e.description||'—')+(e.category?(' <span class="tag cat">'+escapeHtml(e.category)+'</span>'):'')+'</td>'+
+    var entriesRows = entries.filter(function(e){ return e.kind==='revenue'; }).map(function(e){
+      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+
         entryAmountCell(e.kind, e.amount)+'</tr>';
-    }).join('') || '<tr><td colspan="4" class="empty">لا توجد حركات على هذا المشروع بعد</td></tr>';
+    }).join('') || '<tr><td colspan="3" class="empty">لا توجد إيرادات مسجلة على هذا المشروع بعد</td></tr>';
 
     // Inventory summary (read-only)
     var soldByItem = {}; invSales.forEach(function(s){ soldByItem[s.item_id]=(soldByItem[s.item_id]||0)+Number(s.quantity); });
@@ -2623,6 +2642,19 @@
       openingLabel:'رصيد أول '+ledger.year, closingLabel:'رصيد آخر '+ledger.year
     }) : '')+
 
+    // ---- Company expenses as a whole (company-level + all its projects' costs), main items only ----
+    (cache.meExpCompany ? (
+      '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة ككل — «'+escapeHtml(cache.meExpCompany.name)+'»</h3>'+
+      '<div class="grid-stats">'+
+        '<div class="stat"><div class="label">إجمالي مصاريف الشركة ككل</div><div class="val debit">'+money(cache.meExpCompany.total)+'</div></div>'+
+        '<div class="stat"><div class="label">منها: مصاريف الشركة نفسها</div><div class="val debit">'+money(cache.meExpCompany.companyLevelTotal)+'</div></div>'+
+        '<div class="stat"><div class="label">منها: تكاليف المشاريع</div><div class="val debit">'+money(cache.meExpCompany.projectCostsTotal)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك في الشركة</div><div class="val teal">'+cache.meExpCompany.percentage+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من مصاريف الشركة</div><div class="val teal">'+money(cache.meExpCompany.myShare)+'</div></div>'+
+      '</div>'+
+      partnerExpenseTableHtml(cache.meExpCompany, 'مصاريف الشركة ككل — البنود الرئيسية ونصيبك منها')
+    ) : '')+
+
     // ---- Project performance: separate section, its own project selector ----
     (cache.meProjects.length ? (
       '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">أداء المشروع</h3>'+
@@ -2632,10 +2664,14 @@
           '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
           '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
           '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+          '<div class="stat"><div class="label">نسبتك في المشروع</div><div class="val teal">'+(myShare.percentage||0)+'%</div></div>'+
+          '<div class="stat"><div class="label">نصيبك من الإيرادات</div><div class="val credit">'+money(rep.revenue*(myShare.percentage||0)/100)+'</div></div>'+
+          '<div class="stat"><div class="label">نصيبك من مصاريف المشروع</div><div class="val debit">'+money(cache.meExpProject?cache.meExpProject.myShare:rep.expense*(myShare.percentage||0)/100)+'</div></div>'+
           '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
         '</div>'+
-        '<div class="panel"><div class="panel-head"><h3>حساب المشروع بالكامل</h3></div><div class="panel-body" style="padding:0;">'+
-          '<table><thead><tr><th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
+        partnerExpenseTableHtml(cache.meExpProject, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+
+        '<div class="panel"><div class="panel-head"><h3>إيرادات المشروع</h3></div><div class="panel-body" style="padding:0;">'+
+          '<table><thead><tr><th>التاريخ</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
         '</div></div>'+
         '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:0;">'+
           '<table><thead><tr><th>الصنف</th><th>الوحدة</th><th>الداخل للمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th></tr></thead><tbody>'+invRows+'</tbody></table>'+
