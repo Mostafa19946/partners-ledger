@@ -1092,6 +1092,25 @@ app.post('/api/inventory/items/bulk-delete', auth, requireAdmin, async (req, res
   res.json({ ok: true, deleted: ids.length });
 });
 
+// Keeps a unit's status in step with its sales: once everything in stock is sold the unit becomes "مباع";
+// if a sale is deleted/reduced and stock comes back, a unit that was "مباع" goes back to "متاح".
+// Any other status ("محجوز", "مغلق", custom) is never touched while stock remains.
+async function syncSoldStatus(db, itemIds) {
+  const ids = [...new Set((itemIds || []).map(n => parseInt(n, 10)).filter(Boolean))];
+  if (!ids.length) return;
+  await db.query(`
+    UPDATE inventory_items i SET status = CASE
+        WHEN s.q IS NOT NULL AND i.quantity_in - s.q <= 0.000001 THEN 'مباع'
+        WHEN i.status = 'مباع' THEN 'متاح'
+        ELSE i.status END
+    FROM (
+      SELECT x.id, (SELECT SUM(quantity) FROM inventory_sales WHERE item_id = x.id) AS q
+      FROM inventory_items x WHERE x.id = ANY($1::int[])
+    ) s
+    WHERE i.id = s.id
+  `, [ids]);
+}
+
 app.get('/api/inventory/sales', auth, async (req, res) => {
   const projectId = req.query.projectId;
   if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
@@ -1126,7 +1145,93 @@ app.post('/api/inventory/sales', auth, requireAdmin, async (req, res) => {
      maintenanceValue || 0, maintenanceCollected || 0, utilitiesValue || 0, utilitiesCollected || 0,
      bankCollected || 0, bankHeld || 0, collectionDiff || 0, downPaymentPercent === undefined ? null : downPaymentPercent]
   );
+  await syncSoldStatus(pool, [rows[0].item_id]);
   res.json(rows[0]);
+});
+
+// Import many sales for ONE project in a single transaction. For every row the server re-checks what the
+// browser already previewed: the unit belongs to the project, the date is valid, there is stock left
+// (so importing the same sheet twice can't sell a unit twice), then it creates the sale and, when a
+// collected amount is given, one dated collection entry for it.
+app.post('/api/inventory/sales/bulk', auth, requireAdmin, async (req, res) => {
+  const { projectId, rows } = req.body || {};
+  const pid = parseInt(projectId, 10);
+  if (!pid || !Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
+  if (rows.length > 3000) return res.status(400).json({ error: 'الملف كبير جدًا (الحد 3000 صف في المرة)' });
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const items = (await client.query('SELECT id, quantity_in FROM inventory_items WHERE project_id=$1', [pid])).rows;
+    if (!items.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'المشروع ده مفيهوش مخزون' }); }
+    const left = {};
+    items.forEach(i => { left[i.id] = Number(i.quantity_in); });
+    (await client.query('SELECT item_id, SUM(quantity) AS q FROM inventory_sales WHERE project_id=$1 GROUP BY item_id', [pid]))
+      .rows.forEach(r => { if (r.item_id in left) left[r.item_id] -= Number(r.q); });
+
+    let inserted = 0, collections = 0;
+    const rejected = [], touched = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || {};
+      const itemId = parseInt(r.itemId, 10), qty = r.quantity === undefined ? 1 : num(r.quantity), amount = num(r.saleAmount);
+      let reason = null;
+      if (!(itemId in left)) reason = 'الوحدة مش تابعة للمشروع ده';
+      else if (!r.saleDate || !isValidISODate(r.saleDate)) reason = 'تاريخ التعاقد غير صالح';
+      else if (!(amount > 0)) reason = 'قيمة الوحدة غير صالحة';
+      else if (!(qty > 0)) reason = 'الكمية غير صالحة';
+      else if (left[itemId] + 1e-9 < qty) reason = 'الوحدة مباعة بالفعل (مفيش متبقي منها)';
+      else if (r.downPaymentPercent != null && !(num(r.downPaymentPercent) >= 0 && num(r.downPaymentPercent) <= 100)) reason = 'نسبة المقدم غير منطقية';
+      if (reason) { rejected.push({ index: i, reason }); continue; }
+
+      const ins = await client.query(
+        `INSERT INTO inventory_sales
+          (project_id, item_id, quantity, sale_amount, sale_date, description, customer_name, building_no,
+           garage_value, garage_collected, maintenance_value, maintenance_collected, utilities_value, utilities_collected,
+           collection_diff, down_payment_percent)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+        [pid, itemId, qty, amount, r.saleDate, r.description || null, r.customerName || null, r.buildingNo || null,
+         num(r.garageValue), num(r.garageCollected), num(r.maintenanceValue), num(r.maintenanceCollected),
+         num(r.utilitiesValue), num(r.utilitiesCollected), num(r.collectionDiff),
+         r.downPaymentPercent == null ? null : num(r.downPaymentPercent)]
+      );
+      left[itemId] -= qty;
+      touched.push(itemId);
+      inserted++;
+      const collected = num(r.collected);
+      if (collected > 0) {
+        const cdate = (r.collectionDate && isValidISODate(r.collectionDate)) ? r.collectionDate : r.saleDate;
+        await client.query(
+          'INSERT INTO sale_collections (sale_id, amount, collection_date, description) VALUES ($1,$2,$3,$4)',
+          [ins.rows[0].id, collected, cdate, 'تحصيل مستورد من إكسيل']
+        );
+        collections++;
+      }
+    }
+    await syncSoldStatus(client, touched);
+    await client.query('COMMIT');
+    res.json({ inserted, collections, rejected });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('sales bulk import failed', e);
+    res.status(500).json({ error: 'فشل استيراد المبيعات: ' + e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// One-click catch-up for units sold BEFORE statuses followed sales: every fully-sold unit in the project that
+// isn't marked "مباع" yet gets marked. Only moves units forward to "مباع"; nothing else is changed.
+app.post('/api/inventory/sync-status', auth, requireAdmin, async (req, res) => {
+  const pid = parseInt((req.body || {}).projectId, 10);
+  if (!pid) return res.status(400).json({ error: 'projectId مطلوب' });
+  const { rows } = await pool.query(`
+    UPDATE inventory_items i SET status = 'مباع'
+    WHERE i.project_id = $1 AND COALESCE(i.status, '') <> 'مباع'
+      AND EXISTS (SELECT 1 FROM inventory_sales s WHERE s.item_id = i.id)
+      AND i.quantity_in - (SELECT SUM(quantity) FROM inventory_sales s WHERE s.item_id = i.id) <= 0.000001
+    RETURNING i.id
+  `, [pid]);
+  res.json({ updated: rows.length });
 });
 
 app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
@@ -1157,18 +1262,21 @@ app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
      v(b.downPaymentPercent), req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  await syncSoldStatus(pool, [rows[0].item_id]);
   res.json(rows[0]);
 });
 
 app.delete('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
-  await pool.query('DELETE FROM inventory_sales WHERE id=$1', [req.params.id]);
+  const del = await pool.query('DELETE FROM inventory_sales WHERE id=$1 RETURNING item_id', [req.params.id]);
+  await syncSoldStatus(pool, del.rows.map(r => r.item_id));
   res.json({ ok: true });
 });
 
 app.post('/api/inventory/sales/bulk-delete', auth, requireAdmin, async (req, res) => {
   const { ids } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
-  await pool.query('DELETE FROM inventory_sales WHERE id = ANY($1::int[])', [ids]);
+  const del = await pool.query('DELETE FROM inventory_sales WHERE id = ANY($1::int[]) RETURNING item_id', [ids]);
+  await syncSoldStatus(pool, del.rows.map(r => r.item_id));
   res.json({ ok: true, deleted: ids.length });
 });
 

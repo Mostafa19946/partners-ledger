@@ -323,7 +323,9 @@
       var reader = new FileReader();
       reader.onload = function(e){
         try{
-          var wb = XLSX.read(new Uint8Array(e.target.result), {type:'array', cellDates:true});
+          // dates are read as serial numbers on purpose: with cellDates:true a browser ahead of UTC (Egypt)
+          // gets every real date cell one day early. excelToISODate() converts the serial exactly.
+          var wb = XLSX.read(new Uint8Array(e.target.result), {type:'array', cellDates:false});
           var sheet = wb.Sheets[wb.SheetNames[0]];
           var rows = XLSX.utils.sheet_to_json(sheet, {defval:''});
           resolve(rows);
@@ -333,9 +335,9 @@
       reader.readAsArrayBuffer(file);
     });
   }
-  function importPanelHtml(idPrefix, title, columnsDesc){
+  function importPanelHtml(idPrefix, title, columnsDesc, customNoteHtml){
     return '<div class="panel"><div class="panel-head"><h3>'+title+'</h3></div><div class="panel-body">'+
-      '<div class="muted-note">الأعمدة المطلوبة في الصف الأول من ملف الإكسيل (بنفس الأسماء بالظبط): <b>'+columnsDesc+'</b></div>'+
+      (customNoteHtml || '<div class="muted-note">الأعمدة المطلوبة في الصف الأول من ملف الإكسيل (بنفس الأسماء بالظبط): <b>'+columnsDesc+'</b></div>')+
       '<button class="btn ghost sm" id="'+idPrefix+'-template" type="button" style="margin-top:8px;">⬇ تحميل نموذج إكسيل فارغ</button>'+
       '<div class="field" style="max-width:320px;margin-top:14px;"><input type="file" id="'+idPrefix+'-file" accept=".xlsx,.xls,.csv"></div>'+
       '<div id="'+idPrefix+'-status"></div>'+
@@ -402,6 +404,151 @@
       }catch(e){
         alert(e.message); confirmBtn.disabled = false; confirmBtn.textContent = 'تأكيد الاستيراد';
       }
+    });
+  }
+
+  // ---- Sales import (per project): reads the sales report layout as-is (header row anywhere in the first
+  // rows, one sheet per project), matches each unit against the project's inventory, and previews before saving.
+  function nk(x){ return String(x==null?'':x).replace(/[\u064B-\u065F\u0670\u0640]/g,'').replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/\s+/g,'').toLowerCase(); }
+  var SALES_COLS = {
+    unit:['رقمالوحده'], building:['رقمالعماره'], date:['تاريخالتعاقد'], customer:['اسمالعميل'], amount:['قيمهالوحده'],
+    collected:['المحصلمنالعميل'], collectionDate:['تاريخالتحصيل'], downPct:['نسبهالمقدم'],
+    garage:['الجراج'], garageCollected:['المحصلمنالجراج'], maint:['دفعهالصيانه'], maintCollected:['المحصلمندفعهالصيانه'],
+    util:['المرافق+الصحي','المرافقوالصحي','المرافق'], utilCollected:['المحصلمنالمرافق'], diff:['فروقتحصيل'], notes:['ملاحظات']
+  };
+  function sheetToSalesRows(ws){
+    var aoa = XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:true, blankrows:false});
+    var hdr = -1;
+    for(var i=0;i<Math.min(aoa.length,30);i++){ if(aoa[i].some(function(c){ return nk(c)==='رقمالوحده'; })){ hdr=i; break; } }
+    if(hdr<0) return null;
+    var col = {};
+    aoa[hdr].forEach(function(h,idx){
+      var key = nk(h); if(!key) return;
+      Object.keys(SALES_COLS).forEach(function(f){ if(col[f]===undefined && SALES_COLS[f].indexOf(key)>=0) col[f]=idx; });
+    });
+    return aoa.slice(hdr+1).map(function(r){
+      var o = {}; Object.keys(col).forEach(function(f){ o[f] = r[col[f]]; }); return o;
+    });
+  }
+  function num0(v){ var n = excelToNumber(v); return isNaN(n) ? 0 : n; }
+  function makeSalesMapper(items, sales){
+    var nu = function(x){ return String(x==null?'':x).trim().toLowerCase().replace(/\s+/g,' '); };
+    var sold = {}; sales.forEach(function(s){ sold[s.item_id] = (sold[s.item_id]||0) + Number(s.quantity); });
+    var left = {}; items.forEach(function(it){ left[it.id] = Number(it.quantity_in) - (sold[it.id]||0); });
+    var nl = function(x){ return String(x==null?'':x).trim().toLowerCase().replace(/[\s.]+/g,'.'); };   // "R1.Retail.31 .1" ~ "R1.Retail.31.1"
+    var index = {}, loose = {};
+    items.forEach(function(it){
+      var raw = [String(it.name)], m = String(it.name).match(/\(([^()]+)\)\s*$/);   // "Pharmacy 2 (R3.Medical.27.G)" also matches by its code
+      if(m) raw.push(m[1]);
+      raw.forEach(function(x){
+        var k = nu(x), l = nl(x);
+        (index[k] = index[k] || []); if(index[k].indexOf(it)<0) index[k].push(it);
+        (loose[l] = loose[l] || []); if(loose[l].indexOf(it)<0) loose[l].push(it);
+      });
+    });
+    var lastBuilding = '';
+    return function(r){
+      var code = String(r.unit==null?'':r.unit).trim();
+      if(!code) return null;                                   // totals / blank rows
+      var bld = String(r.building==null?'':r.building).trim(); if(bld) lastBuilding = bld;
+      var amountRaw = excelToNumber(r.amount), collected = num0(r.collected);
+      var isSale = String(r.customer||'').trim() || (r.date!==''&&r.date!=null) || collected>0 || (amountRaw>0);
+      if(!isSale) return null;                                  // a listed unit with no sale data
+      var bad = function(kind){ return {__invalid:true, kind:kind, code:code}; };
+      var cands = index[nu(code)] || [], fuzzy = false;
+      if(!cands.length){ cands = loose[nl(code)] || []; fuzzy = cands.length>0; }
+      if(!cands.length) return bad('notfound');
+      if(cands.length>1) return bad('ambiguous');
+      var it = cands[0];
+      var date = excelToISODate(r.date); if(!date) return bad('date');
+      var amount = amountRaw>0 ? amountRaw : (Number(it.unit_price)||0); if(!(amount>0)) return bad('amount');
+      var dp = null;
+      if(r.downPct!=='' && r.downPct!=null){
+        var raw = String(r.downPct), v = excelToNumber(raw.replace('%',''));
+        if(!isNaN(v)){ dp = (raw.indexOf('%')>=0 || v>1) ? v : v*100; dp = Math.round(dp*10000)/10000; if(dp<0||dp>100) return bad('pct'); }
+      }
+      if(left[it.id] < 1 - 1e-9) return bad('sold');
+      left[it.id] -= 1;
+      return { itemId:it.id, itemName:it.name, saleDate:date, customerName:String(r.customer||'').trim(),
+        buildingNo: it.building || lastBuilding || '', saleAmount:amount, quantity:1, downPaymentPercent:dp,
+        garageValue:num0(r.garage), garageCollected:num0(r.garageCollected), maintenanceValue:num0(r.maint), maintenanceCollected:num0(r.maintCollected),
+        utilitiesValue:num0(r.util), utilitiesCollected:num0(r.utilCollected), collectionDiff:num0(r.diff),
+        description:String(r.notes||'').trim(), collected:collected, collectionDate:excelToISODate(r.collectionDate)||date, _fuzzy:fuzzy, _code:code };
+    };
+  }
+  var SALES_REJECT_LABEL = {
+    notfound:'الوحدة مش موجودة في مخزون هذا المشروع', sold:'الوحدة مباعة بالفعل في البرنامج (أو مكررة في الملف)',
+    date:'تاريخ التعاقد ناقص أو غير صالح', amount:'قيمة الوحدة فاضية ومفيش سعر ليها في المخزون',
+    ambiguous:'في أكتر من وحدة بنفس الكود في المخزون', pct:'نسبة المقدم غير منطقية'
+  };
+  function bindSalesImportPanel(){
+    var fileInput = document.getElementById('import-sales-file');
+    if(!fileInput) return;
+    var statusEl = document.getElementById('import-sales-status'), confirmBtn = document.getElementById('import-sales-confirm');
+    var pid = uiState.invProjectId, wb = null, sheets = [], currentSheet = null, pending = [];
+    function stock(){ return {items: cache.inventoryItems[pid]||[], sales: cache.inventorySales[pid]||[]}; }
+    function runSheet(name){
+      var rows = sheetToSalesRows(wb.Sheets[name]) || [], st = stock(), mapper = makeSalesMapper(st.items, st.sales);
+      var valid = [], bad = {}, total = 0;
+      rows.forEach(function(r){
+        var m = mapper(r); total++;
+        if(!m) { total--; return; }
+        if(m.__invalid){ (bad[m.kind] = bad[m.kind]||[]).push(m.code); } else valid.push(m);
+      });
+      return {valid:valid, bad:bad, found: valid.length + Object.keys(bad).reduce(function(t,k){ return t+bad[k].length; },0)};
+    }
+    function render(){
+      var res = runSheet(currentSheet); pending = res.valid;
+      var rejectedN = res.found - res.valid.length;
+      var sheetPick = sheets.length>1 ? '<div class="field" style="max-width:320px;margin-top:10px;"><label>الشيت</label><select id="import-sales-sheet">'+
+        sheets.map(function(n){ return '<option value="'+escapeHtml(n)+'"'+(n===currentSheet?' selected':'')+'>'+escapeHtml(n)+'</option>'; }).join('')+'</select></div>' : '';
+      var sumV = res.valid.reduce(function(t,x){ return t+x.saleAmount; },0), sumC = res.valid.reduce(function(t,x){ return t+x.collected; },0);
+      var fuzzyList = res.valid.filter(function(x){ return x._fuzzy; });
+      var head = '<div class="'+(res.valid.length?'ok-box':'error-box')+'">'+(res.found
+        ? 'لقيت '+res.found+' عملية بيع في الشيت «'+escapeHtml(currentSheet)+'» — جاهز للاستيراد: <b>'+res.valid.length+'</b>'+(rejectedN?'، مرفوض: <b>'+rejectedN+'</b>':'')+
+          (res.valid.length?' | إجمالي قيم الوحدات '+money(sumV)+' | إجمالي المحصل '+money(sumC):'')
+        : 'مفيش عمليات بيع في الشيت ده (كل الوحدات من غير عميل أو تاريخ)')+'</div>';
+      var rej = Object.keys(res.bad).map(function(k){
+        var codes = res.bad[k]; return '<li>'+SALES_REJECT_LABEL[k]+' ('+codes.length+'): <span class="mono">'+escapeHtml(codes.slice(0,8).join('، '))+(codes.length>8?' …':'')+'</span></li>';
+      }).join('');
+      var prev = res.valid.slice(0,6).map(function(x){
+        return '<tr><td>'+escapeHtml(x.itemName)+'</td><td>'+escapeHtml(x.customerName||'—')+'</td><td>'+fmtDate(x.saleDate)+'</td><td class="amt">'+money(x.saleAmount)+'</td><td class="amt credit">'+money(x.collected)+'</td><td class="mono">'+(x.downPaymentPercent==null?'—':x.downPaymentPercent+'%')+'</td></tr>';
+      }).join('');
+      statusEl.innerHTML = sheetPick + '<div style="margin-top:10px;">'+head+'</div>'+
+        (fuzzyList.length ? '<div class="muted-note" style="margin-top:8px;">'+fuzzyList.length+' وحدة اتطابقت بعد تجاهل فرق بسيط في الكتابة (مسافة أو نقطة): <span class="mono">'+escapeHtml(fuzzyList.map(function(x){ return x._code+' ← '+x.itemName; }).join('، '))+'</span></div>' : '')+
+        (rej ? '<div class="error-box" style="margin-top:8px;">أسباب الرفض:<ul style="margin:6px 0 0;padding-right:18px;">'+rej+'</ul></div>' : '')+
+        (prev ? '<div style="overflow-x:auto;margin-top:10px;"><div class="muted-note">معاينة أول '+Math.min(6,res.valid.length)+' عمليات (راجعها قبل التأكيد):</div><table><thead><tr><th>الوحدة</th><th>العميل</th><th>التعاقد</th><th>قيمة الوحدة</th><th>المحصل</th><th>المقدم</th></tr></thead><tbody>'+prev+'</tbody></table></div>' : '');
+      var sp = document.getElementById('import-sales-sheet');
+      if(sp) sp.addEventListener('change', function(){ currentSheet = sp.value; render(); });
+      confirmBtn.textContent = 'تأكيد استيراد '+res.valid.length+' عملية بيع';
+      confirmBtn.style.display = res.valid.length ? 'inline-flex' : 'none';
+    }
+    fileInput.addEventListener('change', function(){
+      confirmBtn.style.display = 'none'; pending = []; wb = null;
+      var file = fileInput.files[0]; if(!file) return;
+      statusEl.innerHTML = '<div class="empty">جارِ القراءة…</div>';
+      var reader = new FileReader();
+      reader.onload = function(e){
+        try{
+          wb = XLSX.read(new Uint8Array(e.target.result), {type:'array', cellDates:false});
+        }catch(err){ statusEl.innerHTML = '<div class="error-box">تعذرت قراءة الملف، تأكد إنه ملف إكسيل صحيح</div>'; return; }
+        sheets = wb.SheetNames.filter(function(n){ return sheetToSalesRows(wb.Sheets[n]) !== null; });
+        if(!sheets.length){ statusEl.innerHTML = '<div class="error-box">مش لاقي عمود «رقم الوحدة» في أي شيت من الملف</div>'; return; }
+        var best = sheets[0], bestScore = -1;                       // pick the sheet whose units match this project best
+        sheets.forEach(function(n){ var r = runSheet(n), sc = r.valid.length; if(sc>bestScore){ bestScore = sc; best = n; } });
+        currentSheet = best; render();
+      };
+      reader.onerror = function(){ statusEl.innerHTML = '<div class="error-box">تعذرت قراءة الملف</div>'; };
+      reader.readAsArrayBuffer(file);
+    });
+    confirmBtn.addEventListener('click', async function(){
+      if(!pending.length) return;
+      confirmBtn.disabled = true; confirmBtn.textContent = 'جارِ الاستيراد…';
+      try{
+        var r = await api('POST','/inventory/sales/bulk',{projectId:pid, rows:pending});
+        alert('تم استيراد '+r.inserted+' عملية بيع، وتسجيل '+r.collections+' تحصيل'+(r.rejected.length?('\nواتجاهل '+r.rejected.length+' عملية (راجع المخزون وجرّب تاني)'):''));
+        invalidateAndReload();
+      }catch(e){ alert(e.message); confirmBtn.disabled = false; confirmBtn.textContent = 'تأكيد الاستيراد'; }
     });
   }
 
@@ -1544,6 +1691,9 @@
     var buildingFilterOptions = '<option value="all">كل العمارات</option>'+buildingValues.map(function(b){
       return '<option value="'+escapeHtml(b)+'"'+(uiState.invBuildingFilter===b?' selected':'')+'>'+escapeHtml(b)+'</option>';
     }).join('');
+    var staleSold = items.filter(function(it){
+      return soldByItem[it.id]!==undefined && (Number(it.quantity_in) - soldByItem[it.id]) <= 0.000001 && it.status!=='مباع';
+    });
     var filteredItems = items.filter(function(it){
       if(uiState.invStatusFilter!=='all' && (it.status||'')!==uiState.invStatusFilter) return false;
       if(uiState.invBuildingFilter!=='all' && (it.building||'')!==uiState.invBuildingFilter) return false;
@@ -1651,6 +1801,8 @@
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
 
     '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+      (staleSold.length ? '<div class="muted-note" style="margin:0 18px 12px;">من هنا ورايح حالة الوحدة بتتحول لـ«مباع» تلقائي أول ما تتسجل عليها عملية بيع. لكن فيه <b>'+staleSold.length+'</b> وحدة اتباعت قبل كده وحالتها لسه مش «مباع». '+
+        '<button class="btn sm" id="sync-sold-status" type="button" style="margin-right:8px;">تحديثها لـ«مباع»</button></div>' : '')+
       '<div class="form-row" style="padding:0 18px;max-width:460px;">'+
         '<div class="field"><label>فلتر الحالة</label><select id="inv-status-filter">'+statusFilterOptions+'</select></div>'+
         '<div class="field"><label>فلتر العمارة</label><select id="inv-building-filter">'+buildingFilterOptions+'</select></div>'+
@@ -1750,6 +1902,10 @@
     '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>'+
+    importPanelHtml('import-sales', 'استيراد المبيعات من إكسيل — المشروع: '+escapeHtml((cache.projects.find(function(p){return p.id==pid;})||{}).name||''), '',
+      '<div class="muted-note">بيقرا تقرير المبيعات زي ما هو (الهيدر يقدر يكون في أي صف من أول 30 صف، وتقدر ترفع ملف فيه أكتر من شيت). '+
+      'اللازم: <b>رقم الوحدة</b> (لازم يطابق كود الوحدة في مخزون المشروع) و<b>تاريخ التعاقد</b>. الباقي اختياري: اسم العميل، قيمة الوحدة (لو فاضية بتتاخد من سعر المخزون)، المحصل من العميل، نسبة المقدم، الجراج، دفعة الصيانة، المرافق، فروق تحصيل، ملاحظات. '+
+      'أعمدة البنك والمتبقي والإجماليات بتتجاهل. الوحدة المباعة قبل كده بتترفض، فالاستيراد مرتين مبيكررش حاجة.</div>')+
     '<div class="field" style="max-width:320px;"><label>المشروع اللي هيتم الاستيراد له</label><select id="import-inv-target-project">'+
       cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==pid?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('')+
     '</select></div>'+
@@ -2270,6 +2426,15 @@
     var rps = document.getElementById('report-project-select');
     if(rps) rps.addEventListener('change', function(){ uiState.reportProjectId = Number(rps.value); loadAdminPage(); });
 
+    var syncSoldBtn = document.getElementById('sync-sold-status');
+    if(syncSoldBtn) syncSoldBtn.addEventListener('click', async function(){
+      syncSoldBtn.disabled = true;
+      try{
+        var r = await api('POST','/inventory/sync-status',{projectId: uiState.invProjectId});
+        alert('تم تحديث حالة '+r.updated+' وحدة لـ«مباع»');
+        invalidateAndReload();
+      }catch(e){ alert(e.message); syncSoldBtn.disabled = false; }
+    });
     var invStatusFilterEl = document.getElementById('inv-status-filter');
     if(invStatusFilterEl) invStatusFilterEl.addEventListener('change', function(){ uiState.invStatusFilter = invStatusFilterEl.value; renderAdminMain(); });
     var invBuildingFilterEl = document.getElementById('inv-building-filter');
@@ -2446,6 +2611,10 @@
       ['التاريخ','البيان','المبلغ'], ['31/07/2025','دفعة من العميل أحمد',15000], [21,66,21]);
     bindTemplateButton('import-exp', 'نموذج_استيراد_المصروفات.xlsx', 'المصروفات',
       ['التاريخ','البيان','مدين','دائن','التصنيف'], ['31/07/2025','تحويل دفعة من قسط تخصيص الأرض',1000000,'','ارض المشروع - قيمه العقد'], [21,66,16,16,42]);
+    bindTemplateButton('import-sales', 'نموذج_استيراد_المبيعات.xlsx', 'المبيعات',
+      ['رقم العمارة','رقم الوحدة','تاريخ التعاقد','اسم العميل','قيمة الوحدة','المحصل من العميل','نسبة المقدم','الجراج','المحصل من الجراج','دفعة الصيانة','المحصل من دفعة الصيانة','المرافق + الصحي','المحصل من المرافق','فروق تحصيل','ملاحظات'],
+      ['C1','C1.1.05','08/02/2026','اسم العميل',2242500,337608,'10%',150000,'',179400,'','','',0,''], [12,16,14,26,14,16,12,12,16,14,22,16,18,12,24]);
+    bindSalesImportPanel();
     bindTemplateButton('import-inv', 'نموذج_استيراد_المخزون.xlsx', 'المخزون',
       ['اسم الصنف','الوحدة','الكمية','سعر الوحدة','الحالة','العمارة','مساحة الوحدة','مساحة الجاردن'], ['C1.G.01','وحدة سكنية',1,4500000,'متاح','C1','130',''], [18,16,10,16,12,12,14,14]);
     bindTemplateButton('import-ca', 'نموذج_استيراد_الحساب_الجاري.xlsx', 'الحساب الجاري',
