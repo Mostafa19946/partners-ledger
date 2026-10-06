@@ -1003,6 +1003,35 @@ app.post('/api/expense-payments', auth, requireAdmin, async (req, res) => {
   res.json(rows[0]);
 });
 
+// Settle many expenses at once: every selected expense that still has a balance gets ONE payment
+// for exactly its remaining amount. One statement, so it either applies fully or not at all, and a
+// double click can't pay twice (the second run finds nothing left to pay). Revenue rows, refunds and
+// already-settled expenses are skipped.
+app.post('/api/expense-payments/bulk', auth, requireAdmin, async (req, res) => {
+  const { entryIds, date, description } = req.body || {};
+  if (!Array.isArray(entryIds) || !entryIds.length) return res.status(400).json({ error: 'لم يتم تحديد أي مصروف' });
+  if (!date || !isValidISODate(date)) return res.status(400).json({ error: 'تاريخ السداد غير صحيح' });
+  const ids = [...new Set(entryIds.map(n => parseInt(n, 10)).filter(Boolean))];
+  if (!ids.length) return res.status(400).json({ error: 'لم يتم تحديد أي مصروف' });
+  try {
+    const { rows } = await pool.query(`
+      INSERT INTO expense_payments (entry_id, amount, payment_date, description)
+      SELECT e.id, e.amount - COALESCE(p.paid, 0), $2::date, $3
+      FROM entries e
+      LEFT JOIN (
+        SELECT entry_id, SUM(amount) AS paid FROM expense_payments WHERE entry_id = ANY($1::int[]) GROUP BY entry_id
+      ) p ON p.entry_id = e.id
+      WHERE e.id = ANY($1::int[]) AND e.kind = 'expense' AND e.amount - COALESCE(p.paid, 0) > 0.005
+      RETURNING entry_id, amount
+    `, [ids, date, description || 'سداد جماعي']);
+    const totalPaid = rows.reduce((t, r) => t + Number(r.amount), 0);
+    res.json({ paid: rows.length, totalPaid, skipped: ids.length - rows.length });
+  } catch (e) {
+    console.error('bulk expense payment failed', e);
+    res.status(500).json({ error: 'تعذر تسجيل السداد: ' + e.message });
+  }
+});
+
 app.delete('/api/expense-payments/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM expense_payments WHERE id=$1', [req.params.id]);
   res.json({ ok: true });

@@ -158,9 +158,18 @@
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
     invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all',
-    entriesScope:'project', entriesCompanyId:null };
+    entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
+  var ITEM_STATUSES = ['متاح','محجوز','مباع','مغلق'];
+  // <select> for an item's status; a value that already exists but isn't in the list is kept, never lost
+  function statusSelectHtml(attrs, current){
+    var vals = ITEM_STATUSES.slice();
+    if(current && vals.indexOf(current)<0) vals.push(current);
+    return '<select '+attrs+'><option value="">—</option>'+vals.map(function(v){
+      return '<option value="'+escapeHtml(v)+'"'+(v===current?' selected':'')+'>'+escapeHtml(v)+'</option>';
+    }).join('')+'</select>';
+  }
   var COMPANY_EXPENSE_CATEGORIES = ['مصاريف عمومية وإدارية','مصاريف تسويقية','مصاريف استثمارية','مصاريف تمويلية','شراء أصول','أخرى'];
 
   // ---- Expense items tree helpers ----
@@ -859,6 +868,7 @@
 
   // ---- Reusable row-selection + bulk delete for tables ----
   var selectionSets = {};
+  var selectionListeners = {};
   function getSelectionSet(key){ if(!selectionSets[key]) selectionSets[key] = new Set(); return selectionSets[key]; }
   function selectColHeader(tableKey){ return '<th style="width:34px;"><input type="checkbox" class="select-all" data-table="'+tableKey+'"></th>'; }
   function selectColCell(tableKey, id){ return '<td><input type="checkbox" class="row-select" data-table="'+tableKey+'" value="'+id+'"></td>'; }
@@ -872,6 +882,7 @@
     var selectAllEls = document.querySelectorAll('.select-all[data-table="'+tableKey+'"]');
     var bulkBtn = document.querySelector('.bulk-delete-btn[data-table="'+tableKey+'"]');
     function updateBulkBtn(){
+      (selectionListeners[tableKey]||[]).forEach(function(fn){ fn(set); });
       if(!bulkBtn) return;
       var n = set.size;
       bulkBtn.textContent = 'حذف المحدد ('+n+')';
@@ -1211,7 +1222,18 @@
 
     var catOptions = expenseItemOptions(EXPENSE_CATEGORIES);
 
-    var rows = list.map(function(e){
+    var visibleList = list.filter(function(e){
+      if(uiState.entriesTypeFilter!=='all' && e.kind!==uiState.entriesTypeFilter) return false;
+      if(uiState.entriesPayFilter!=='all'){
+        if(e.kind!=='expense') return false;
+        var rem = Number(e.amount) - (paidByEntry[e.id]||0);
+        if(uiState.entriesPayFilter==='unpaid' && !(rem>0.001)) return false;
+        if(uiState.entriesPayFilter==='paid' && rem>0.001) return false;
+      }
+      return true;
+    });
+
+    var rows = visibleList.map(function(e){
       var extra = '';
       if(e.kind==='expense'){
         var paid = paidByEntry[e.id]||0;
@@ -1229,7 +1251,12 @@
         entryAmountCell(e.kind, e.amount)+
         extra+
         '<td><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="10" class="empty">لا توجد حركات بعد لهذا المشروع</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="empty">'+(list.length?'لا توجد حركات تطابق الفلتر المختار':'لا توجد حركات بعد لهذا المشروع')+'</td></tr>';
+
+    var typeFilterOpts = [['all','الكل'],['expense','مصروفات فقط'],['revenue','إيرادات فقط']].map(function(o){
+      return '<option value="'+o[0]+'"'+(uiState.entriesTypeFilter===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('');
+    var payFilterOpts = [['all','الكل'],['unpaid','عليها متبقي (غير مسددة بالكامل)'],['paid','مسددة بالكامل']].map(function(o){
+      return '<option value="'+o[0]+'"'+(uiState.entriesPayFilter===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('');
 
     return '<div class="page-head"><h2>الإيرادات والمصروفات</h2><p>إيرادات وتكاليف المشروع المختار فقط — مصاريف الشركة العامة بتظهر من «الشركة ككل» فوق.</p></div>'+entriesScopeToggleHtml()+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="entries-project-select">'+options+'</select></div>'+
@@ -1244,7 +1271,12 @@
       '<button class="btn" type="submit">إضافة</button></form>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>سجل الحركات</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('entries')+'</div>'+
+      '<div class="form-row" style="padding:0 18px;max-width:560px;">'+
+        '<div class="field"><label>النوع</label><select id="entries-type-filter">'+typeFilterOpts+'</select></div>'+
+        '<div class="field"><label>حالة السداد</label><select id="entries-pay-filter">'+payFilterOpts+'</select></div>'+
+      '</div>'+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('entries')+
+        '<button class="btn sm bulk-pay-btn" data-table="entries" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسديد المحدد</button></div>'+
       '<table><thead><tr>'+selectColHeader('entries')+'<th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
     importPanelHtml('import-rev', 'استيراد إيرادات المشروع من إكسيل', 'التاريخ (يوم/شهر/سنة زي 31/07/2025)، البيان، المبلغ')+
@@ -1525,7 +1557,7 @@
         '<td><input type="text" class="ei-building" data-item="'+it.id+'" value="'+escapeHtml(it.building||'')+'" style="width:90px;" placeholder="—"></td>'+
         '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td>'+
         '<td class="mono '+(remainingQty<0?'debit':'')+'">'+remainingQty+'</td>'+
-        '<td><input type="text" class="ei-status" data-item="'+it.id+'" value="'+escapeHtml(it.status||'')+'" style="width:90px;" placeholder="—"></td>'+
+        '<td>'+statusSelectHtml('class="ei-status" data-item="'+it.id+'" style="width:100px;"', it.status||'')+'</td>'+
         '<td><input type="number" class="ei-price" data-item="'+it.id+'" value="'+it.unit_price+'" min="0" step="0.01" style="width:110px;"></td>'+
         '<td><input type="number" class="ei-net-area" data-item="'+it.id+'" value="'+(it.net_area!=null?it.net_area:'')+'" min="0" step="0.01" style="width:90px;"></td>'+
         '<td><input type="number" class="ei-garden-area" data-item="'+it.id+'" value="'+(it.garden_area!=null?it.garden_area:'')+'" min="0" step="0.01" style="width:90px;"></td>'+
@@ -1635,7 +1667,7 @@
       '</div><div class="form-row three">'+
         '<div class="field"><label>الكمية الداخلة للمخزون</label><input type="number" id="ni-qty" min="0" step="0.01" required></div>'+
         '<div class="field"><label>سعر بيع الوحدة</label><input type="number" id="ni-price" min="0" step="0.01"></div>'+
-        '<div class="field"><label>الحالة (اختياري)</label><input type="text" id="ni-status" placeholder="متاح / محجوز / مباع"></div>'+
+        '<div class="field"><label>الحالة (اختياري)</label>'+statusSelectHtml('id="ni-status"', '')+'</div>'+
       '</div><div class="form-row">'+
         '<div class="field"><label>مساحة الوحدة (اختياري)</label><input type="number" id="ni-net-area" min="0" step="0.01"></div>'+
         '<div class="field"><label>مساحة الجاردن (اختياري)</label><input type="number" id="ni-garden-area" min="0" step="0.01"></div>'+
@@ -2262,19 +2294,22 @@
         try{ await api('DELETE','/inventory/items/'+btn.getAttribute('data-del-item')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
+    async function saveItemRow(id){
+      var sel = function(cls){ return document.querySelector('.'+cls+'[data-item="'+id+'"]'); };
+      var body = {
+        building: sel('ei-building').value.trim(),      // '' clears it (null would mean "leave unchanged")
+        status: sel('ei-status').value,
+        unitPrice: parseFloat(sel('ei-price').value)||0,
+        netArea: sel('ei-net-area').value ? parseFloat(sel('ei-net-area').value) : null,
+        gardenArea: sel('ei-garden-area').value ? parseFloat(sel('ei-garden-area').value) : null
+      };
+      try{ await api('PUT','/inventory/items/'+id, body); invalidateAndReload(); } catch(e){ alert(e.message); }
+    }
     document.querySelectorAll('[data-save-item]').forEach(function(btn){
-      btn.addEventListener('click', async function(){
-        var id = btn.getAttribute('data-save-item');
-        var sel = function(cls){ return document.querySelector('.'+cls+'[data-item="'+id+'"]'); };
-        var body = {
-          building: sel('ei-building').value.trim() || null,
-          status: sel('ei-status').value.trim() || null,
-          unitPrice: parseFloat(sel('ei-price').value)||0,
-          netArea: sel('ei-net-area').value ? parseFloat(sel('ei-net-area').value) : null,
-          gardenArea: sel('ei-garden-area').value ? parseFloat(sel('ei-garden-area').value) : null
-        };
-        try{ await api('PUT','/inventory/items/'+id, body); invalidateAndReload(); } catch(e){ alert(e.message); }
-      });
+      btn.addEventListener('click', function(){ saveItemRow(btn.getAttribute('data-save-item')); });
+    });
+    document.querySelectorAll('select.ei-status').forEach(function(selEl){
+      selEl.addEventListener('change', function(){ saveItemRow(selEl.getAttribute('data-item')); });   // saves as soon as you pick
     });
     var nsBuildingSelect = document.getElementById('ns-building-select');
     var nsItem = document.getElementById('ns-item');
@@ -2476,6 +2511,47 @@
     var eaExportEl = document.getElementById('ea-export');
     if(eaExportEl) eaExportEl.addEventListener('click', exportExpenseAnalysis);
 
+    // what would a bulk settlement do with the current ticks? (only expenses that still have a balance)
+    function payableSelection(){
+      var pid = uiState.entriesProjectId;
+      var paid = {};
+      (cache.expensePayments[pid]||[]).forEach(function(pm){ paid[pm.entry_id] = (paid[pm.entry_id]||0) + Number(pm.amount); });
+      var chosen = Array.from(getSelectionSet('entries')).map(Number);
+      var out = [];
+      (cache.entries[pid]||[]).forEach(function(e){
+        if(chosen.indexOf(e.id)<0 || e.kind!=='expense') return;
+        var rem = Number(e.amount) - (paid[e.id]||0);
+        if(rem>0.005) out.push({id:e.id, remaining:rem});
+      });
+      return out;
+    }
+    var bulkPayBtn = document.querySelector('.bulk-pay-btn[data-table="entries"]');
+    selectionListeners['entries'] = [function(){
+      if(!bulkPayBtn) return;
+      var pay = payableSelection();
+      var total = pay.reduce(function(t,x){ return t+x.remaining; },0);
+      bulkPayBtn.textContent = 'تسديد المحدد ('+pay.length+') — '+money(total);
+      bulkPayBtn.style.display = pay.length ? 'inline-flex' : 'none';
+    }];
+    if(bulkPayBtn) bulkPayBtn.addEventListener('click', async function(){
+      var pay = payableSelection();
+      if(!pay.length){ alert('مفيش مصروفات عليها متبقي في اللي حددته'); return; }
+      var total = pay.reduce(function(t,x){ return t+x.remaining; },0);
+      var dateStr = prompt('تسديد المتبقي بالكامل لـ '+pay.length+' مصروف بإجمالي '+money(total)+'\nتاريخ السداد (YYYY-MM-DD):', todayStr());
+      if(dateStr===null) return;
+      dateStr = dateStr.trim();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)){ alert('صيغة التاريخ لازم تكون YYYY-MM-DD'); return; }
+      bulkPayBtn.disabled = true;
+      try{
+        var r = await api('POST','/expense-payments/bulk',{entryIds: pay.map(function(x){ return x.id; }), date: dateStr});
+        alert('تم تسديد '+r.paid+' مصروف بإجمالي '+money(r.totalPaid));
+        invalidateAndReload();
+      }catch(e){ alert(e.message); bulkPayBtn.disabled = false; }
+    });
+    var entTypeF = document.getElementById('entries-type-filter');
+    if(entTypeF) entTypeF.addEventListener('change', function(){ uiState.entriesTypeFilter = entTypeF.value; renderAdminMain(); });
+    var entPayF = document.getElementById('entries-pay-filter');
+    if(entPayF) entPayF.addEventListener('change', function(){ uiState.entriesPayFilter = entPayF.value; renderAdminMain(); });
     bindSelectableTable('entries', '/entries/bulk-delete');
     bindSelectableTable('current-account', '/current-account/bulk-delete');
     bindSelectableTable('inv-items', '/inventory/items/bulk-delete');
