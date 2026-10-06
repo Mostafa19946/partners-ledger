@@ -435,7 +435,11 @@
     var nu = function(x){ return String(x==null?'':x).trim().toLowerCase().replace(/\s+/g,' '); };
     var sold = {}; sales.forEach(function(s){ sold[s.item_id] = (sold[s.item_id]||0) + Number(s.quantity); });
     var left = {}; items.forEach(function(it){ left[it.id] = Number(it.quantity_in) - (sold[it.id]||0); });
-    var nl = function(x){ return String(x==null?'':x).trim().toLowerCase().replace(/[\s.]+/g,'.'); };   // "R1.Retail.31 .1" ~ "R1.Retail.31.1"
+    // "R1.Retail.31 .1" ~ "R1.Retail.31.1" and "R1.Retail.7 G" ~ "R1.Retail.07.G": spaces/dots are the same separator,
+    // and leading zeros in number parts don't matter
+    var nl = function(x){
+      return String(x==null?'':x).trim().toLowerCase().replace(/[\s.]+/g,'.').split('.').map(function(t){ return /^\d+$/.test(t) ? String(parseInt(t,10)) : t; }).join('.');
+    };
     var index = {}, loose = {};
     items.forEach(function(it){
       var raw = [String(it.name)], m = String(it.name).match(/\(([^()]+)\)\s*$/);   // "Pharmacy 2 (R3.Medical.27.G)" also matches by its code
