@@ -178,6 +178,36 @@ async function migrateCurrentAccountToCompanyLevel() {
 }
 
 // ---------------------------------------------------------------------------
+// One-time fix: items imported before the "building" column existed. Their unit
+// code already starts with the court/building ("C1.G.01" -> C1), so fill the empty
+// building from it. Runs once (marker row), only touches empty buildings, never
+// touches sales or anything else, so it can't duplicate or delete data.
+// ---------------------------------------------------------------------------
+async function backfillInventoryBuildingFromCode() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  const done = await pool.query(`SELECT 1 FROM schema_migrations WHERE name='inventory_building_from_code_v1'`);
+  if (done.rows.length) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(`
+      UPDATE inventory_items
+      SET building = substring(name from '^(C[0-9]+)\\.')
+      WHERE (building IS NULL OR TRIM(building) = '') AND name ~ '^C[0-9]+\\.'
+    `);
+    await client.query(`INSERT INTO schema_migrations (name) VALUES ('inventory_building_from_code_v1')`);
+    await client.query('COMMIT');
+    console.log(`MIGRATION inventory_building_from_code_v1 applied. Items given a building from their code: ${r.rowCount}.`);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('MIGRATION inventory_building_from_code_v1 FAILED (nothing changed):', e.message);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Schema bootstrap (idempotent) + admin seed
 // ---------------------------------------------------------------------------
 async function initDb() {
@@ -323,6 +353,7 @@ async function initDb() {
 
   await migrateFromSourceIfRequested();
   await migrateCurrentAccountToCompanyLevel();
+  await backfillInventoryBuildingFromCode();
 
   // Seed the default expense items once
   const itemCount = (await pool.query('SELECT COUNT(*)::int AS c FROM expense_items')).rows[0].c;
