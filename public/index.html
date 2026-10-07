@@ -168,7 +168,7 @@
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
     invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all',
-    entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
+    assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var ITEM_STATUSES = ['متاح','محجوز','مباع','مغلق'];
@@ -707,9 +707,14 @@
   }
   function mapAssetRow(r){
     var name = String(r['اسم الأصل']||'').trim();
-    var purchaseDate = excelToISODate(r['تاريخ الشراء']);
-    var cost = excelToNumber(r['التكلفة']);
-    if(!name || !purchaseDate || !cost || isNaN(cost)) return null;
+    var rawDate = r['تاريخ الشراء'], rawCost = r['التكلفة'];
+    var purchaseDate = excelToISODate(rawDate);
+    var cost = excelToNumber(rawCost);
+    var blank = !name && (rawDate==null || rawDate==='') && (rawCost==null || rawCost==='');
+    if(blank) return null;
+    if(!name) return {__invalid:true, reason:'اسم الأصل ناقص'};
+    if(!purchaseDate) return {__invalid:true, reason:'تاريخ الشراء ناقص أو غير صالح'};
+    if(!cost || isNaN(cost) || cost<=0) return {__invalid:true, reason:'التكلفة ناقصة أو صفر'};
     var life = r['سنوات العمر الافتراضي']!==undefined ? excelToNumber(r['سنوات العمر الافتراضي']) : NaN;
     return {name:name, category:String(r['التصنيف']||'').trim()||null, purchaseDate:purchaseDate, cost:cost,
       usefulLifeYears: isNaN(life)?null:life, notes:String(r['ملاحظات']||'').trim()||null};
@@ -839,6 +844,7 @@
     {key:'companies', label:'الشركات', icon:'🏢'},
     {key:'partners', label:'الشركاء', icon:'👥', sub:true},
     {key:'projects', label:'المشاريع', icon:'📁', sub:true},
+    {key:'assets', label:'الأصول الثابتة', icon:'🏗️', sub:true},
     {key:'entries', label:'الإيرادات والمصروفات', icon:'📒'},
     {key:'analytics', label:'تحليل الفترات', icon:'📈'},
     {key:'expenseAnalysis', label:'تحليل المصاريف', icon:'🧾'},
@@ -883,6 +889,7 @@
     if(adminTab==='partners') main.innerHTML = pagePartners();
     else if(adminTab==='companies') main.innerHTML = pageCompanies();
     else if(adminTab==='projects') main.innerHTML = pageProjects();
+    else if(adminTab==='assets') main.innerHTML = pageAssets();
     else if(adminTab==='entries') main.innerHTML = pageEntries();
     else if(adminTab==='analytics') main.innerHTML = pageAnalytics();
     else if(adminTab==='expenseAnalysis') main.innerHTML = pageExpenseAnalysis();
@@ -908,6 +915,7 @@
     if(adminTab==='entries') tabKey = 'entries:'+uiState.entriesScope+':'+(uiState.entriesScope==='company'
       ? (uiState.entriesCompanyId || (cache.companies[0] && cache.companies[0].id) || '')
       : (uiState.entriesProjectId || (cache.projects[0] && cache.projects[0].id) || ''));
+    if(adminTab==='assets') tabKey = 'assets:'+(uiState.assetsCompanyId || (cache.companies[0] && cache.companies[0].id) || '');
     if(adminTab==='current') tabKey = adminTab+':'+uiState.caCompanyId+':'+uiState.caLedgerPartnerId+':'+uiState.caLedgerYear;
     if(adminTab==='expenseAnalysis') tabKey = adminTab+':'+uiState.eaScope+':'+(uiState.eaYear||'');
     if(!force && loadedTabs[tabKey]){ renderAdminMain(); return; }
@@ -921,9 +929,15 @@
         cache.companies.forEach(function(co){
           extraCalls.push(api('GET','/companies/'+co.id+'/expenses').then(function(r){ cache.companyExpenses[co.id]=r; }));
           extraCalls.push(api('GET','/companies/'+co.id+'/report').then(function(r){ cache.companyReports[co.id]=r; }));
-          extraCalls.push(api('GET','/companies/'+co.id+'/assets').then(function(r){ cache.companyAssets[co.id]=r; }));
         });
         await Promise.all(extraCalls);
+      }
+      else if(adminTab==='assets'){
+        cache.companies = cache.companies.length ? cache.companies : await api('GET','/companies');
+        if(cache.companies.length){
+          if(!uiState.assetsCompanyId || !cache.companies.some(function(c){ return c.id===uiState.assetsCompanyId; })) uiState.assetsCompanyId = cache.companies[0].id;
+          cache.companyAssets[uiState.assetsCompanyId] = await api('GET','/companies/'+uiState.assetsCompanyId+'/assets');
+        }
       }
       else if(adminTab==='projects'){
         var pr = await Promise.all([api('GET','/partners'), api('GET','/projects'), api('GET','/companies')]);
@@ -1044,7 +1058,7 @@
   function bulkDeleteBtnHtml(tableKey){
     return '<button class="btn danger sm bulk-delete-btn" data-table="'+tableKey+'" type="button" style="display:none;margin-bottom:10px;">حذف المحدد</button>';
   }
-  function bindSelectableTable(tableKey, bulkDeleteUrl){
+  function bindSelectableTable(tableKey, bulkDeleteUrl, confirmNote){
     var set = getSelectionSet(tableKey);
     set.clear();
     var rowEls = Array.prototype.slice.call(document.querySelectorAll('.row-select[data-table="'+tableKey+'"]'));
@@ -1082,7 +1096,7 @@
       bulkBtn.addEventListener('click', async function(){
         var ids = Array.from(set).map(Number);
         if(!ids.length) return;
-        if(!confirm('حذف '+ids.length+' عنصر محدد؟ لا يمكن التراجع عن هذا الإجراء.')) return;
+        if(!confirm('حذف '+ids.length+' عنصر محدد؟ '+(confirmNote?confirmNote+' ':'')+'لا يمكن التراجع عن هذا الإجراء.')) return;
         try{
           await api('POST', bulkDeleteUrl, {ids:ids});
           invalidateAndReload();
@@ -1145,22 +1159,6 @@
 
       var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
 
-      var assetList = cache.companyAssets[co.id] || [];
-      var assetTableKey = 'company-assets-'+co.id;
-      var totalCost=0, totalBookValue=0;
-      var assetRows = assetList.map(function(a){
-        totalCost += Number(a.cost); totalBookValue += Number(a.bookValue);
-        return '<tr>'+selectColCell(assetTableKey, a.id)+
-          '<td>'+escapeHtml(a.name)+'</td>'+
-          '<td>'+(a.category?escapeHtml(a.category):'—')+'</td>'+
-          '<td>'+fmtDate(a.purchase_date)+'</td>'+
-          '<td class="amt">'+money(a.cost)+'</td>'+
-          '<td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
-          '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td>'+
-          '<td class="amt teal">'+money(a.bookValue)+'</td>'+
-          '<td><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'">✕</button></td></tr>';
-      }).join('') || '<tr><td colspan="9" class="empty">لا توجد أصول ثابتة مسجلة بعد</td></tr>';
-
       var projectRows = rep ? rep.projects.map(function(p){
         return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt credit">'+money(p.revenue)+'</td><td class="amt debit">'+money(p.expense)+'</td>'+
           '<td class="amt '+(p.net>=0?'credit':'debit')+'">'+money(p.net)+'</td>'+
@@ -1222,30 +1220,9 @@
             '<button class="btn" type="submit" style="margin-top:8px;">إضافة مصروف</button>'+
           '</form>'+
 
-          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">سجل الأصول الثابتة</h3>'+
-          '<div class="muted-note">أصول الشركة (معدات، سيارات، أثاث...)، وبيتحسب الإهلاك المتراكم والقيمة الدفترية تلقائيًا بطريقة القسط الثابت لو حددت سنوات العمر الافتراضي.</div>'+
-          '<div class="grid-stats" style="margin-top:10px;">'+
-            '<div class="stat"><div class="label">إجمالي تكلفة الأصول</div><div class="val teal">'+money(totalCost)+'</div></div>'+
-            '<div class="stat"><div class="label">إجمالي القيمة الدفترية الحالية</div><div class="val credit">'+money(totalBookValue)+'</div></div>'+
-          '</div>'+
-          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(assetTableKey)+'</div>'+
-          '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(assetTableKey)+
-            '<th>اسم الأصل</th><th>التصنيف</th><th>تاريخ الشراء</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th><th></th>'+
-          '</tr></thead><tbody>'+assetRows+'</tbody></table></div>'+
-          '<form class="add-co-asset-form" data-company="'+co.id+'" style="margin-top:14px;">'+
-            '<div class="form-row three">'+
-              '<div class="field"><label>اسم الأصل</label><input type="text" class="co-asset-name" required></div>'+
-              '<div class="field"><label>التصنيف (اختياري)</label><input type="text" class="co-asset-category" placeholder="معدات / سيارات / أثاث"></div>'+
-              '<div class="field"><label>تاريخ الشراء</label><input type="date" class="co-asset-date" value="'+todayStr()+'" required></div>'+
-            '</div>'+
-            '<div class="form-row three">'+
-              '<div class="field"><label>التكلفة</label><input type="number" class="co-asset-cost" min="0" step="0.01" required></div>'+
-              '<div class="field"><label>سنوات العمر الافتراضي (اختياري)</label><input type="number" class="co-asset-life" min="0" step="0.5"></div>'+
-              '<div class="field"><label>ملاحظات</label><input type="text" class="co-asset-notes"></div>'+
-            '</div>'+
-            '<button class="btn" type="submit" style="margin-top:8px;">إضافة أصل</button>'+
-          '</form>'+
-          importPanelHtml('import-assets-'+co.id, 'استيراد الأصول الثابتة من إكسيل', 'اسم الأصل، تاريخ الشراء، التكلفة، التصنيف (اختياري)، سنوات العمر الافتراضي (اختياري)، ملاحظات (اختياري)')+
+          '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">الأصول الثابتة</h3>'+
+          '<div class="muted-note">الأصول الثابتة ليها دلوقتي صفحة مستقلة: تسجيل وحذف واستيراد من إكسيل، وكل أصل بيتسجل تلقائي كمصروف «شراء أصول» على الشركة. إجمالي تكلفة الأصول وقيمتها الدفترية ظاهرين في الملخص المالي فوق.</div>'+
+          '<button class="btn ghost sm" data-goto-assets="'+co.id+'" type="button" style="margin-top:8px;">فتح صفحة الأصول الثابتة ←</button>'+
         '</div></div>';
     }).join('');
 
@@ -1257,6 +1234,59 @@
         '<button class="btn" type="submit" style="margin-top:10px;">إضافة الشركة</button>'+
       '</form>'+
     '</div></div>';
+  }
+
+  function pageAssets(){
+    var head = '<div class="page-head"><h2>الأصول الثابتة</h2><p>سجل أصول كل شركة (معدات، سيارات، أثاث...) بإهلاكها وقيمتها الدفترية. كل أصل بيتسجل تلقائي كمصروف «شراء أصول» على الشركة، فبيدخل في إجمالي مصاريفها ونصيب الشركاء منها.</p></div>';
+    if(!cache.companies.length) return head+'<div class="panel"><div class="empty">أنشئ شركة أولاً من تبويب "الشركات".</div></div>';
+    var co = cache.companies.find(function(c){ return c.id==uiState.assetsCompanyId; }) || cache.companies[0];
+    var list = cache.companyAssets[co.id] || [];
+    var key = 'company-assets-'+co.id;
+    var coOptions = cache.companies.map(function(c){ return '<option value="'+c.id+'"'+(c.id===co.id?' selected':'')+'>'+escapeHtml(c.name)+'</option>'; }).join('');
+    var tCost=0, tDep=0, tBook=0, tBooked=0, noExpense=0;
+    var rows = list.map(function(a){
+      tCost += Number(a.cost); tDep += Number(a.accumulatedDepreciation); tBook += Number(a.bookValue);
+      if(a.has_expense) tBooked += Number(a.cost); else noExpense++;
+      return '<tr>'+selectColCell(key, a.id)+
+        '<td>'+escapeHtml(a.name)+'</td><td>'+(a.category?escapeHtml(a.category):'—')+'</td><td>'+fmtDate(a.purchase_date)+'</td>'+
+        '<td class="amt">'+money(a.cost)+'</td><td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
+        '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td><td class="amt teal">'+money(a.bookValue)+'</td>'+
+        '<td>'+(a.has_expense?'<span class="tag rev">✓ مسجل كمصروف</span>':'<span style="color:var(--ink-soft);">— مش مسجل</span>')+'</td>'+
+        '<td><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="حذف الأصل ومصروف شرائه">✕</button></td></tr>';
+    }).join('') || '<tr><td colspan="10" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
+    return head+
+    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>الشركة</label><select id="assets-company-select">'+coOptions+'</select></div>'+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">عدد الأصول</div><div class="val teal">'+list.length+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي تكلفة الأصول</div><div class="val">'+money(tCost)+'</div></div>'+
+      '<div class="stat"><div class="label">الإهلاك المتراكم</div><div class="val debit">'+money(tDep)+'</div></div>'+
+      '<div class="stat"><div class="label">القيمة الدفترية الحالية</div><div class="val credit">'+money(tBook)+'</div></div>'+
+      '<div class="stat"><div class="label">المسجل كمصروف «شراء أصول»</div><div class="val teal">'+money(tBooked)+'</div></div>'+
+    '</div>'+
+    (noExpense ? '<div class="muted-note" style="margin-bottom:10px;">فيه <b>'+noExpense+'</b> أصل مش مسجل له مصروف شراء. حدّده من الجدول واضغط «تسجيل المحدد كمصروف شراء أصول». لو كنتي سجّلتي شراءه كمصروف بإيدك قبل كده، متسجّلوش تاني عشان ميتحسبش مرتين.</div>' : '')+
+    '<div class="panel"><div class="panel-head"><h3>سجل الأصول — «'+escapeHtml(co.name)+'»</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml(key)+
+        '<button class="btn sm" id="assets-record-btn" data-company="'+co.id+'" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسجيل المحدد كمصروف شراء أصول</button></div>'+
+      '<table><thead><tr>'+selectColHeader(key)+'<th>اسم الأصل</th><th>التصنيف</th><th>تاريخ الشراء</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th><th>مصروف الشراء</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>إضافة أصل</h3></div><div class="panel-body">'+
+      '<form class="add-co-asset-form" data-company="'+co.id+'">'+
+        '<div class="form-row three">'+
+          '<div class="field"><label>اسم الأصل</label><input type="text" class="co-asset-name" required></div>'+
+          '<div class="field"><label>التصنيف (اختياري)</label><input type="text" class="co-asset-category" placeholder="معدات / سيارات / أثاث"></div>'+
+          '<div class="field"><label>تاريخ الشراء</label><input type="date" class="co-asset-date" value="'+todayStr()+'" required></div>'+
+        '</div><div class="form-row three">'+
+          '<div class="field"><label>التكلفة</label><input type="number" class="co-asset-cost" min="0" step="0.01" required></div>'+
+          '<div class="field"><label>سنوات العمر الافتراضي (اختياري)</label><input type="number" class="co-asset-life" min="0" step="0.5"></div>'+
+          '<div class="field"><label>ملاحظات</label><input type="text" class="co-asset-notes"></div>'+
+        '</div>'+
+        '<label style="display:flex;align-items:center;gap:8px;font-weight:500;margin:6px 0;"><input type="checkbox" class="co-asset-expense" checked style="width:auto;"> سجّل الشراء كمصروف «شراء أصول» على الشركة</label>'+
+        '<button class="btn" type="submit" style="margin-top:8px;">إضافة الأصل</button>'+
+      '</form>'+
+    '</div></div>'+
+    '<label style="display:flex;align-items:center;gap:8px;font-weight:500;margin:0 0 8px;"><input type="checkbox" id="asset-import-expense" checked style="width:auto;"> سجّل كل أصل مستورد كمصروف «شراء أصول» على الشركة</label>'+
+    importPanelHtml('import-assets-'+co.id, 'استيراد الأصول الثابتة من إكسيل', '',
+      '<div class="muted-note">الأعمدة: <b>اسم الأصل، تاريخ الشراء، التكلفة</b> (لازم)، والتصنيف وسنوات العمر الافتراضي وملاحظات (اختياري). تاريخ الشراء بصيغة يوم/شهر/سنة زي 15/01/2025. الأصل اللي متسجل قبل كده بنفس الاسم والتاريخ والتكلفة بيتخطى، فاستيراد نفس الملف مرتين مبيكررش حاجة.</div>');
   }
 
   function pageProjects(){
@@ -2372,11 +2402,43 @@
         catch(e){ alert(e.message); }
       });
     });
+    var assetsCoSel = document.getElementById('assets-company-select');
+    if(assetsCoSel) assetsCoSel.addEventListener('change', function(){ uiState.assetsCompanyId = Number(assetsCoSel.value); loadAdminPage(); });
+    document.querySelectorAll('[data-goto-assets]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        uiState.assetsCompanyId = Number(btn.getAttribute('data-goto-assets')); adminTab = 'assets';
+        document.querySelectorAll('[data-nav]').forEach(function(n){ n.classList.toggle('active', n.getAttribute('data-nav')==='assets'); });
+        loadAdminPage();
+      });
+    });
+    var assetRecBtn = document.getElementById('assets-record-btn');
+    if(assetRecBtn){
+      var recCid = Number(assetRecBtn.getAttribute('data-company')), recKey = 'company-assets-'+recCid;
+      var unlinkedSelected = function(){
+        var chosen = Array.from(getSelectionSet(recKey)).map(Number);
+        return (cache.companyAssets[recCid]||[]).filter(function(a){ return chosen.indexOf(a.id)>=0 && !a.has_expense; });
+      };
+      selectionListeners[recKey] = [function(){
+        var n = unlinkedSelected().length;
+        assetRecBtn.textContent = 'تسجيل المحدد كمصروف شراء أصول ('+n+')';
+        assetRecBtn.style.display = n ? 'inline-flex' : 'none';
+      }];
+      assetRecBtn.addEventListener('click', async function(){
+        var list = unlinkedSelected(); if(!list.length) return;
+        var total = list.reduce(function(t,a){ return t+Number(a.cost); },0);
+        if(!confirm('هيتسجل '+list.length+' مصروف «شراء أصول» على الشركة بإجمالي '+money(total)+'.\nلو كنتي سجّلتي شراء الأصول دي كمصروفات بإيدك قبل كده هتتحسب مرتين. تكمّل؟')) return;
+        try{
+          var r = await api('POST','/companies/'+recCid+'/assets/record-expenses',{ids:list.map(function(a){ return a.id; })});
+          alert('تم تسجيل '+r.created+' مصروف «شراء أصول»'); invalidateAndReload();
+        }catch(e){ alert(e.message); }
+      });
+    }
     document.querySelectorAll('.add-co-asset-form').forEach(function(form){
       form.addEventListener('submit', async function(ev){
         ev.preventDefault();
         var cid = form.getAttribute('data-company');
         var body = {
+          recordExpense: form.querySelector('.co-asset-expense') ? form.querySelector('.co-asset-expense').checked : true,
           name: form.querySelector('.co-asset-name').value.trim(),
           category: form.querySelector('.co-asset-category').value.trim() || null,
           purchaseDate: form.querySelector('.co-asset-date').value,
@@ -2392,18 +2454,22 @@
       btn.addEventListener('click', async function(){
         var cid = btn.getAttribute('data-del-co-asset');
         var aid = btn.getAttribute('data-co-asset-id');
+        if(!confirm('حذف الأصل؟ مصروف «شراء أصول» المرتبط بيه (لو موجود) هيتحذف معاه.')) return;
         try{ await api('DELETE','/companies/'+cid+'/assets/'+aid); invalidateAndReload(); }
         catch(e){ alert(e.message); }
       });
     });
     cache.companies.forEach(function(co){
       bindSelectableTable('company-exp-'+co.id, '/companies/'+co.id+'/expenses/bulk-delete');
-      bindSelectableTable('company-assets-'+co.id, '/companies/'+co.id+'/assets/bulk-delete');
+      bindSelectableTable('company-assets-'+co.id, '/companies/'+co.id+'/assets/bulk-delete', 'مصاريف «شراء أصول» المرتبطة بيهم هتتحذف معاهم.');
       bindTemplateButton('import-assets-'+co.id, 'نموذج_استيراد_الأصول_الثابتة.xlsx', 'الأصول الثابتة',
         ['اسم الأصل','تاريخ الشراء','التكلفة','التصنيف','سنوات العمر الافتراضي','ملاحظات'],
         ['سيارة نقل', '15/01/2025', 850000, 'سيارات', 5, ''], [24,16,16,18,20,26]);
-      bindImportPanel('import-assets-'+co.id, mapAssetRow, ['اسم الأصل','تاريخ الشراء','التكلفة'], function(rowsToImport){
-        return api('POST','/companies/'+co.id+'/assets/bulk', {rows: rowsToImport});
+      bindImportPanel('import-assets-'+co.id, mapAssetRow, ['اسم الأصل','تاريخ الشراء','التكلفة'], async function(rowsToImport){
+        var flag = document.getElementById('asset-import-expense');
+        var r = await api('POST','/companies/'+co.id+'/assets/bulk', {rows: rowsToImport, recordExpenses: flag ? flag.checked : true});
+        alert('تم استيراد '+r.inserted+' أصل'+(r.skipped?('، وتخطّيت '+r.skipped+' أصل متسجل قبل كده'):'')+(r.expenses?('، وتسجيل '+r.expenses+' مصروف «شراء أصول»'):''));
+        return r;
       });
     });
     document.querySelectorAll('[data-save-co-share]').forEach(function(btn){

@@ -263,6 +263,7 @@ async function initDb() {
       notes TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS asset_id INTEGER REFERENCES company_assets(id) ON DELETE CASCADE;
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL
@@ -385,7 +386,7 @@ async function initDb() {
   // Make sure these top-level categories exist even on databases seeded before they were added
   {
     const allNames = (await pool.query('SELECT name FROM expense_items')).rows.map(r => normCat(r.name));
-    for (const extraName of ['مصاريف استثمارية', 'مصاريف تمويلية']) {
+    for (const extraName of ['مصاريف استثمارية', 'مصاريف تمويلية', ASSET_PURCHASE_CATEGORY]) {
       if (!allNames.includes(normCat(extraName))) {
         const maxOrder = (await pool.query(
           'SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM expense_items WHERE parent_id IS NULL'
@@ -660,6 +661,22 @@ app.post('/api/companies/:id/expenses/bulk', auth, requireAdmin, async (req, res
 // depreciation is computed on read from cost, purchase_date and useful_life_years
 // (when given) — nothing to store or keep in sync.
 // ---------------------------------------------------------------------------
+const ASSET_PURCHASE_CATEGORY = 'شراء أصول';
+
+// Registers the purchase of the given assets as company expenses (category "شراء أصول", dated the purchase date).
+// Assets that already have their expense are skipped, so it is safe to call again.
+async function recordAssetPurchases(db, companyId, assetIds) {
+  const { rows } = await db.query(`
+    INSERT INTO company_expenses (company_id, category, amount, description, entry_date, asset_id)
+    SELECT a.company_id, $2, a.cost, 'شراء أصل: ' || a.name, a.purchase_date, a.id
+    FROM company_assets a
+    WHERE a.company_id = $1 AND a.id = ANY($3::int[])
+      AND NOT EXISTS (SELECT 1 FROM company_expenses e WHERE e.asset_id = a.id)
+    RETURNING id
+  `, [companyId, ASSET_PURCHASE_CATEGORY, assetIds]);
+  return rows.length;
+}
+
 function withAssetDepreciation(row) {
   const cost = Number(row.cost);
   const life = row.useful_life_years == null ? null : Number(row.useful_life_years);
@@ -677,41 +694,68 @@ function withAssetDepreciation(row) {
 }
 
 app.get('/api/companies/:id/assets', auth, requireAdmin, async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT * FROM company_assets WHERE company_id=$1 ORDER BY purchase_date DESC, created_at DESC',
-    [req.params.id]
-  );
+  const { rows } = await pool.query(`
+    SELECT a.*, EXISTS (SELECT 1 FROM company_expenses e WHERE e.asset_id = a.id) AS has_expense
+    FROM company_assets a WHERE a.company_id = $1 ORDER BY a.purchase_date DESC, a.created_at DESC
+  `, [req.params.id]);
   res.json(rows.map(withAssetDepreciation));
 });
 
+// recordExpense (default true): also book the purchase as a company expense under "شراء أصول"
 app.post('/api/companies/:id/assets', auth, requireAdmin, async (req, res) => {
-  const { name, category, purchaseDate, cost, usefulLifeYears, notes } = req.body || {};
+  const { name, category, purchaseDate, cost, usefulLifeYears, notes, recordExpense } = req.body || {};
   if (!name || !purchaseDate || !cost) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const { rows } = await pool.query(
-    'INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-    [req.params.id, name, category || null, purchaseDate, cost, usefulLifeYears || null, notes || null]
-  );
-  res.json(withAssetDepreciation(rows[0]));
+  if (!isValidISODate(purchaseDate)) return res.status(400).json({ error: 'تاريخ الشراء غير صالح' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      'INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [req.params.id, name, category || null, purchaseDate, cost, usefulLifeYears || null, notes || null]
+    );
+    let expenses = 0;
+    if (recordExpense !== false) expenses = await recordAssetPurchases(client, req.params.id, [rows[0].id]);
+    await client.query('COMMIT');
+    res.json({ ...withAssetDepreciation(rows[0]), has_expense: expenses > 0 });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('add asset failed', e);
+    res.status(500).json({ error: 'تعذر إضافة الأصل: ' + e.message });
+  } finally { client.release(); }
 });
 
 app.put('/api/companies/:id/assets/:assetId', auth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const v = (x) => (x === undefined ? null : x);
-  const { rows } = await pool.query(
-    `UPDATE company_assets SET
-       name = COALESCE($1, name),
-       category = COALESCE($2, category),
-       purchase_date = COALESCE($3, purchase_date),
-       cost = COALESCE($4, cost),
-       useful_life_years = COALESCE($5, useful_life_years),
-       notes = COALESCE($6, notes)
-     WHERE id=$7 AND company_id=$8 RETURNING *`,
-    [v(b.name), v(b.category), v(b.purchaseDate), v(b.cost), v(b.usefulLifeYears), v(b.notes), req.params.assetId, req.params.id]
-  );
-  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
-  res.json(withAssetDepreciation(rows[0]));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE company_assets SET
+         name = COALESCE($1, name),
+         category = COALESCE($2, category),
+         purchase_date = COALESCE($3, purchase_date),
+         cost = COALESCE($4, cost),
+         useful_life_years = COALESCE($5, useful_life_years),
+         notes = COALESCE($6, notes)
+       WHERE id=$7 AND company_id=$8 RETURNING *`,
+      [v(b.name), v(b.category), v(b.purchaseDate), v(b.cost), v(b.usefulLifeYears), v(b.notes), req.params.assetId, req.params.id]
+    );
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'غير موجود' }); }
+    // keep the linked purchase expense in step with the asset
+    await client.query(
+      `UPDATE company_expenses SET amount=$1, entry_date=$2, description='شراء أصل: ' || $3 WHERE asset_id=$4`,
+      [rows[0].cost, rows[0].purchase_date, rows[0].name, rows[0].id]
+    );
+    await client.query('COMMIT');
+    res.json(withAssetDepreciation(rows[0]));
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'تعذر تعديل الأصل: ' + e.message });
+  } finally { client.release(); }
 });
 
+// Deleting an asset also deletes the "شراء أصول" expense that was booked for it (FK cascade).
 app.delete('/api/companies/:id/assets/:assetId', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM company_assets WHERE id=$1 AND company_id=$2', [req.params.assetId, req.params.id]);
   res.json({ ok: true });
@@ -720,30 +764,60 @@ app.delete('/api/companies/:id/assets/:assetId', auth, requireAdmin, async (req,
 app.post('/api/companies/:id/assets/bulk-delete', auth, requireAdmin, async (req, res) => {
   const { ids } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
-  await pool.query('DELETE FROM company_assets WHERE id = ANY($1::int[]) AND company_id=$2', [ids, req.params.id]);
-  res.json({ ok: true, deleted: ids.length });
+  const del = await pool.query('DELETE FROM company_assets WHERE id = ANY($1::int[]) AND company_id=$2 RETURNING id', [ids, req.params.id]);
+  res.json({ ok: true, deleted: del.rowCount });
 });
 
+// For assets that were registered without a purchase expense (older ones, or "don't book it" at the time)
+app.post('/api/companies/:id/assets/record-expenses', auth, requireAdmin, async (req, res) => {
+  const ids = Array.isArray((req.body || {}).ids) ? req.body.ids.map(n => parseInt(n, 10)).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'لا يوجد أصول محددة' });
+  const created = await recordAssetPurchases(pool, req.params.id, ids);
+  res.json({ created, alreadyHadExpense: ids.length - created });
+});
+
+// Excel import. Rows that are already in the register (same name + date + cost) are skipped, so importing the same
+// file twice can't duplicate anything. recordExpenses (default true) books each new asset as a "شراء أصول" expense.
 app.post('/api/companies/:id/assets/bulk', auth, requireAdmin, async (req, res) => {
-  const { rows } = req.body || {};
+  const { rows, recordExpenses } = req.body || {};
   if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'بيانات ناقصة' });
-  const valid = rows.filter(r => r.name && r.cost && r.purchaseDate && isValidISODate(r.purchaseDate));
+  const valid = rows.filter(r => r.name && Number(r.cost) > 0 && r.purchaseDate && isValidISODate(r.purchaseDate));
   if (!valid.length) return res.status(400).json({ error: 'لا يوجد صفوف صالحة للاستيراد (تحقق من صيغة التاريخ)' });
+  const client = await pool.connect();
   try {
-    await pool.query(
-      `INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes)
-       SELECT $1, u.name, u.category, u.purchase_date, u.cost, u.useful_life_years, u.notes
-       FROM UNNEST($2::text[], $3::text[], $4::date[], $5::numeric[], $6::numeric[], $7::text[])
-         AS u(name, category, purchase_date, cost, useful_life_years, notes)`,
-      [req.params.id, valid.map(r => r.name), valid.map(r => r.category || null),
-       valid.map(r => r.purchaseDate), valid.map(r => r.cost),
-       valid.map(r => r.usefulLifeYears || null), valid.map(r => r.notes || null)]
-    );
-    res.json({ inserted: valid.length });
+    await client.query('BEGIN');
+    const key = (n, d, c) => String(n).trim().toLowerCase().replace(/\s+/g, ' ') + '|' + d + '|' + Number(c).toFixed(2);
+    const have = {};
+    (await client.query('SELECT name, purchase_date::text AS d, cost FROM company_assets WHERE company_id=$1', [req.params.id]))
+      .rows.forEach(r => { const k = key(r.name, r.d, r.cost); have[k] = (have[k] || 0) + 1; });
+    const fresh = [];
+    let skipped = 0;
+    valid.forEach(r => {
+      const k = key(r.name, r.purchaseDate, r.cost);
+      if (have[k] > 0) { have[k]--; skipped++; } else fresh.push(r);
+    });
+    let ids = [];
+    if (fresh.length) {
+      const ins = await client.query(
+        `INSERT INTO company_assets (company_id, name, category, purchase_date, cost, useful_life_years, notes)
+         SELECT $1, u.name, u.category, u.purchase_date, u.cost, u.useful_life_years, u.notes
+         FROM UNNEST($2::text[], $3::text[], $4::date[], $5::numeric[], $6::numeric[], $7::text[])
+           AS u(name, category, purchase_date, cost, useful_life_years, notes)
+         RETURNING id`,
+        [req.params.id, fresh.map(r => r.name), fresh.map(r => r.category || null),
+         fresh.map(r => r.purchaseDate), fresh.map(r => r.cost),
+         fresh.map(r => r.usefulLifeYears || null), fresh.map(r => r.notes || null)]
+      );
+      ids = ins.rows.map(r => r.id);
+    }
+    const expenses = (recordExpenses !== false && ids.length) ? await recordAssetPurchases(client, req.params.id, ids) : 0;
+    await client.query('COMMIT');
+    res.json({ inserted: ids.length, skipped, expenses });
   } catch (e) {
+    await client.query('ROLLBACK');
     console.error('assets bulk import failed', e);
     res.status(500).json({ error: 'فشل الاستيراد: ' + e.message });
-  }
+  } finally { client.release(); }
 });
 
 // Aggregate report: company's own general expenses + costs and revenue of every project under it
