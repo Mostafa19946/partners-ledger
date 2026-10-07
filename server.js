@@ -1771,6 +1771,36 @@ app.get('/api/me/expense-periods', auth, async (req, res) => {
   }
 });
 
+// Partner view of a company's fixed-asset register (read only). Same figures as the admin register, plus the partner's
+// own share of the cost / book value; the free-text notes stay private to the admin.
+app.get('/api/me/assets', auth, async (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
+  try {
+    const companyId = parseInt(req.query.companyId, 10);
+    if (!companyId) return res.status(400).json({ error: 'companyId مطلوب' });
+    const cp = (await pool.query(
+      `SELECT cp.percentage, c.name FROM company_partners cp JOIN companies c ON c.id = cp.company_id
+       WHERE cp.company_id=$1 AND cp.partner_id=$2`, [companyId, req.user.partnerId]
+    )).rows[0];
+    if (!cp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
+    const assets = (await pool.query(
+      `SELECT id, name, category, purchase_date::text AS purchase_date, cost, useful_life_years
+       FROM company_assets WHERE company_id=$1 ORDER BY purchase_date DESC, id`, [companyId]
+    )).rows.map(withAssetDepreciation).map(a => ({
+      id: a.id, name: a.name, category: a.category, purchaseDate: a.purchase_date, cost: a.cost,
+      usefulLifeYears: a.usefulLifeYears, accumulatedDepreciation: a.accumulatedDepreciation, bookValue: a.bookValue
+    }));
+    const pct = Number(cp.percentage) / 100;
+    const sum = (f) => assets.reduce((t, a) => t + f(a), 0);
+    const cost = sum(a => a.cost), dep = sum(a => a.accumulatedDepreciation), book = sum(a => a.bookValue);
+    res.json({ companyId, name: cp.name, percentage: Number(cp.percentage), assets,
+      totals: { count: assets.length, cost, accumulatedDepreciation: dep, bookValue: book, myCostShare: cost * pct, myBookShare: book * pct } });
+  } catch (e) {
+    console.error('partner assets failed', e);
+    res.status(500).json({ error: 'تعذر تحميل سجل الأصول' });
+  }
+});
+
 app.get('/api/report/:projectId', auth, async (req, res) => {
   const projectId = req.params.projectId;
   if (!(await assertProjectAccess(req, res, projectId))) return;

@@ -152,10 +152,11 @@
   var partnerActiveProject = null;
   var partnerActiveCompany = null;
   var partnerTab = 'account', partnerData = null;
-  var partnerPeriod = 'month', partnerPeriodScope = 'company', partnerPeriods = null;
+  var partnerPeriod = 'month', partnerPeriodScope = 'company', partnerPeriods = null, partnerAssets = null;
   var PARTNER_NAV = [
     {key:'account', label:'حسابي الجاري', icon:'💳'},
     {key:'companyExp', label:'مصاريف الشركة', icon:'🏢'},
+    {key:'assets', label:'الأصول الثابتة', icon:'🏗️'},
     {key:'project', label:'أداء المشروع', icon:'📁'},
     {key:'periods', label:'تحليل الفترات للمصاريف', icon:'📈'},
     {key:'sales', label:'تقرير المبيعات', icon:'🏷️'},
@@ -3041,6 +3042,7 @@
     document.querySelectorAll('[data-ptab]').forEach(function(el){
       el.addEventListener('click', function(){
         partnerTab = el.getAttribute('data-ptab');
+        if(partnerTab==='assets') partnerAssets = null;
         document.querySelectorAll('[data-ptab]').forEach(function(n){ n.classList.toggle('active', n.getAttribute('data-ptab')===partnerTab); });
         if(partnerData) renderPartnerPage(); else loadPartnerDashboard();
       });
@@ -3132,6 +3134,10 @@
     if(partnerTab==='account') html = ppAccount(D);
     else if(partnerTab==='companyExp') html = ppCompanyExp(D);
     else if(partnerTab==='project') html = ppProject(D);
+    else if(partnerTab==='assets'){
+      if(!partnerAssets || partnerAssets.companyId!==partnerActiveCompany){ loadPartnerAssets(); return; }
+      html = ppAssets();
+    }
     else if(partnerTab==='sales') html = ppSales(D);
     else if(partnerTab==='inventory') html = ppInventory(D);
     else if(partnerTab==='periods'){
@@ -3221,6 +3227,49 @@
     if(!proj) return partnerHead('تقرير المخزون')+'<div class="empty">مفيش مشروع متربط بحسابك.</div>';
     return partnerHead('تقرير المخزون — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
       (D.invItems.length ? inventoryGroupedReportHtml(D.invItems, D.invSales).replace(/^<div class="page-head"[^>]*>.*?<\/div>/, '') : '<div class="panel"><div class="empty">لا يوجد مخزون مسجل لهذا المشروع</div></div>');
+  }
+
+  // ---- fixed-asset register (read only), grouped by category with subtotals ----
+  async function loadPartnerAssets(){
+    var main = document.getElementById('main-area');
+    if(!partnerActiveCompany){ main.innerHTML = partnerHead('الأصول الثابتة')+'<div class="empty">لسه متربطش بأي شركة.</div>'; return; }
+    main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
+    try{
+      var data = await api('GET','/me/assets?companyId='+partnerActiveCompany);
+      partnerAssets = { companyId: partnerActiveCompany, data: data };
+      if(partnerTab==='assets') renderPartnerPage();
+    }catch(e){ main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>'; }
+  }
+  function ppAssets(){
+    var d = partnerAssets.data, t = d.totals;
+    var cats = {};
+    d.assets.forEach(function(a){ var k = (a.category||'').trim() || 'بدون تصنيف'; (cats[k] = cats[k] || []).push(a); });
+    var sum = function(list){ return list.reduce(function(r,a){ return {n:r.n+1, cost:r.cost+a.cost, dep:r.dep+a.accumulatedDepreciation, book:r.book+a.bookValue}; }, {n:0,cost:0,dep:0,book:0}); };
+    var totalRow = function(label, x, cls){
+      return '<tr class="'+cls+'"><td colspan="3">'+label+' <span class="mono">('+x.n+' أصل)</span></td><td class="amt">'+money(x.cost)+'</td><td></td><td class="amt">'+money(x.dep)+'</td><td class="amt">'+money(x.book)+'</td></tr>';
+    };
+    var body = Object.keys(cats).sort(natCmpAr).map(function(k){
+      var list = cats[k].slice().sort(function(a,b){ return String(b.purchaseDate).localeCompare(String(a.purchaseDate)); });
+      return '<tr class="ea-g0"><td colspan="7">'+escapeHtml(k)+'</td></tr>'+
+        list.map(function(a){
+          return '<tr><td style="padding-right:30px;" colspan="3">'+escapeHtml(a.name)+' <span style="color:var(--ink-soft);font-size:12px;">— '+fmtDate(a.purchaseDate)+'</span></td>'+
+            '<td class="amt">'+money(a.cost)+'</td><td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
+            '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td><td class="amt teal">'+money(a.bookValue)+'</td></tr>';
+        }).join('')+totalRow('إجمالي '+escapeHtml(k), sum(cats[k]), 'ea-g1');
+    }).join('') || '<tr><td colspan="7" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
+    return partnerHead('الأصول الثابتة — «'+escapeHtml(d.name)+'»', 'سجل أصول الشركة بإهلاكها وقيمتها الدفترية (بطريقة القسط الثابت حسب العمر الافتراضي).')+partnerChipsHtml('company')+
+      '<div class="grid-stats">'+
+        '<div class="stat"><div class="label">عدد الأصول</div><div class="val teal">'+t.count+'</div></div>'+
+        '<div class="stat"><div class="label">إجمالي تكلفة الأصول</div><div class="val">'+money(t.cost)+'</div></div>'+
+        '<div class="stat"><div class="label">الإهلاك المتراكم</div><div class="val debit">'+money(t.accumulatedDepreciation)+'</div></div>'+
+        '<div class="stat"><div class="label">القيمة الدفترية الحالية</div><div class="val credit">'+money(t.bookValue)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك في الشركة</div><div class="val teal">'+d.percentage+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من تكلفة الأصول</div><div class="val teal">'+money(t.myCostShare)+'</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من القيمة الدفترية</div><div class="val credit">'+money(t.myBookShare)+'</div></div>'+
+      '</div>'+
+      '<div class="panel"><div class="panel-head"><h3>سجل الأصول مرتب بالتصنيف</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+        '<table><thead><tr><th colspan="3">الأصل</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th></tr></thead><tbody>'+body+
+        totalRow('الإجمالي الكلي', sum(d.assets), 'ea-grand')+'</tbody></table></div></div>';
   }
 
   // ---- period analysis of expenses (company as a whole, or one project) ----
