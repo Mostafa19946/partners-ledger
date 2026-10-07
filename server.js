@@ -1131,7 +1131,7 @@ app.get('/api/inventory/sales', auth, async (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId مطلوب' });
   if (!(await assertProjectAccess(req, res, projectId))) return;
   const { rows } = await pool.query(`
-    SELECT s.*, i.name AS item_name, i.unit AS item_unit, i.net_area AS item_net_area, i.garden_area AS item_garden_area, i.building AS item_building
+    SELECT s.*, i.name AS item_name, i.unit AS item_unit, i.net_area AS item_net_area, i.garden_area AS item_garden_area, i.building AS item_building, i.unit_price AS item_unit_price
     FROM inventory_sales s JOIN inventory_items i ON i.id = s.item_id
     WHERE s.project_id=$1 ORDER BY s.sale_date DESC, s.created_at DESC
   `, [projectId]);
@@ -1247,6 +1247,43 @@ app.post('/api/inventory/sync-status', auth, requireAdmin, async (req, res) => {
     RETURNING i.id
   `, [pid]);
   res.json({ updated: rows.length });
+});
+
+// Make the inventory price equal to the price a unit was actually sold at (per unit = sale value / quantity).
+// Only units sold at ONE consistent price are changed; a unit sold at several different prices is skipped and
+// reported, because there is no single "right" price for it. Pass itemIds to fix specific units only.
+app.post('/api/inventory/sync-prices', auth, requireAdmin, async (req, res) => {
+  const pid = parseInt((req.body || {}).projectId, 10);
+  if (!pid) return res.status(400).json({ error: 'projectId مطلوب' });
+  const only = Array.isArray((req.body || {}).itemIds) ? req.body.itemIds.map(n => parseInt(n, 10)).filter(Boolean) : null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`
+      SELECT i.id, i.name, i.unit_price,
+             COUNT(DISTINCT ROUND(s.sale_amount / NULLIF(s.quantity, 0), 2)) AS prices,
+             MIN(ROUND(s.sale_amount / NULLIF(s.quantity, 0), 2)) AS price
+      FROM inventory_items i JOIN inventory_sales s ON s.item_id = i.id
+      WHERE i.project_id = $1 AND ($2::int[] IS NULL OR i.id = ANY($2::int[]))
+      GROUP BY i.id, i.name, i.unit_price
+    `, [pid, only]);
+    const changes = [], skipped = [];
+    for (const r of rows) {
+      if (Number(r.prices) !== 1) { skipped.push({ itemId: r.id, name: r.name, reason: 'مباعة بأكتر من سعر' }); continue; }
+      const from = Number(r.unit_price), to = Number(r.price);
+      if (!(to > 0) || Math.abs(from - to) <= 0.005) continue;
+      await client.query('UPDATE inventory_items SET unit_price=$1 WHERE id=$2', [to, r.id]);
+      changes.push({ itemId: r.id, name: r.name, from, to });
+    }
+    await client.query('COMMIT');
+    res.json({ updated: changes.length, changes, skipped });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('sync prices failed', e);
+    res.status(500).json({ error: 'تعذر تحديث الأسعار: ' + e.message });
+  } finally {
+    client.release();
+  }
 });
 
 app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
