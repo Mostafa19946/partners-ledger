@@ -1209,6 +1209,8 @@ app.get('/api/inventory/sales', auth, async (req, res) => {
     FROM inventory_sales s JOIN inventory_items i ON i.id = s.item_id
     WHERE s.project_id=$1 ORDER BY s.sale_date DESC, s.created_at DESC
   `, [projectId]);
+  // partners only ever see the price a unit was sold at, never how it compares to the inventory price
+  if (req.user.role === 'partner') return res.json(rows.map(({ item_unit_price, ...rest }) => rest));
   res.json(rows);
 });
 
