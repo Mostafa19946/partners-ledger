@@ -736,6 +736,14 @@
     return '<td class="amt '+cls+'">'+sign+money(Math.abs(amount))+'</td>';
   }
   function money(n){ n=Number(n)||0; return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  // The partner's settlement = his share of what customers paid minus his share of the expenses.
+  // positive -> "له" (collections cover his share of the expenses and leave a surplus); negative -> "عليه" (still to cover)
+  function settlementHtml(v){
+    v = Number(v)||0;
+    if(Math.abs(v)<0.005) return '<span class="amt">متعادل — 0.00</span>';
+    return v>0 ? '<span class="amt credit">له '+money(v)+'</span>' : '<span class="amt debit">عليه '+money(-v)+'</span>';
+  }
+  var SETTLEMENT_NOTE = 'المحصل من العملاء = اللي اتسجل كتحصيل على مبيعات الوحدات. بيتقسم على الشركاء بنسبهم، وبيتخصم منه نصيب كل شريك من المصاريف: لو الناتج موجب فالمحصل غطّى نصيبه وزيادة (له)، ولو سالب فالمحصل مغطّاش نصيبه من المصاريف والمتبقي عليه (عليه).';
   function balanceLabel(n){ return (Number(n)||0) >= 0 ? 'دائن' : 'مدين'; }
   function balanceTag(n){
     var isCredit = (Number(n)||0) >= 0;
@@ -1145,8 +1153,9 @@
 
       var projectRows = rep ? rep.projects.map(function(p){
         return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt credit">'+money(p.revenue)+'</td><td class="amt debit">'+money(p.expense)+'</td>'+
-          '<td class="amt '+(p.net>=0?'credit':'debit')+'">'+money(p.net)+'</td></tr>';
-      }).join('') || '<tr><td colspan="4" class="empty">لا توجد مشاريع لهذه الشركة بعد</td></tr>' : '';
+          '<td class="amt '+(p.net>=0?'credit':'debit')+'">'+money(p.net)+'</td>'+
+          '<td class="amt credit">'+money(p.collected)+'</td></tr>';
+      }).join('') || '<tr><td colspan="5" class="empty">لا توجد مشاريع لهذه الشركة بعد</td></tr>' : '';
 
       return '<div class="panel"><div class="panel-head"><h3>'+escapeHtml(co.name)+'</h3>'+
         '<div><button class="btn ghost sm" data-rename-company="'+co.id+'" data-current-name="'+escapeHtml(co.name)+'" style="margin-left:8px;">تعديل الاسم</button>'+
@@ -1168,21 +1177,25 @@
               '<div class="stat"><div class="label">إجمالي تكاليف المشاريع</div><div class="val debit">'+money(rep.totalProjectExpense)+'</div></div>'+
               '<div class="stat"><div class="label">مصاريف الشركة العمومية/الإدارية/التسويقية/الاستثمارية/التمويلية</div><div class="val debit">'+money(rep.companyExpenses)+'</div></div>'+
               '<div class="stat"><div class="label">إجمالي كل المصاريف (مشاريع + شركة)</div><div class="val debit">'+money(rep.grandTotalExpenses)+'</div></div>'+
+              '<div class="stat"><div class="label">إجمالي المحصل من العملاء</div><div class="val credit">'+money(rep.totalCollected)+'</div></div>'+
+              '<div class="stat"><div class="label">المحصل ناقص كل المصاريف</div><div class="val '+(rep.collectedMinusExpenses>=0?'credit':'debit')+'">'+settlementHtml(rep.collectedMinusExpenses)+'</div></div>'+
               '<div class="stat"><div class="label">صافي ربح الشركة الكلي</div><div class="val '+(rep.grandNet>=0?'credit':'debit')+'">'+money(rep.grandNet)+'</div></div>'+
               '<div class="stat"><div class="label">إجمالي تكلفة الأصول الثابتة</div><div class="val teal">'+money(rep.totalAssetsCost)+'</div></div>'+
               '<div class="stat"><div class="label">القيمة الدفترية الحالية للأصول</div><div class="val credit">'+money(rep.totalAssetsBookValue)+'</div></div>'+
             '</div>'+
-            '<table style="margin-bottom:18px;"><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th></tr></thead><tbody>'+projectRows+'</tbody></table>'+
+            '<table style="margin-bottom:18px;"><thead><tr><th>المشروع</th><th>الإيرادات</th><th>التكاليف (مصاريف المشروع)</th><th>صافي الربح</th><th>المحصل من العملاء</th></tr></thead><tbody>'+projectRows+'</tbody></table>'+
             '<h3 style="margin:18px 0 10px;font-size:15px;color:var(--teal-deep);">نصيب كل شريك من الإيرادات والمصروفات</h3>'+
-            '<div style="overflow-x:auto;"><table><thead><tr><th>الشريك</th><th>النسبة %</th><th>نصيبه من الإيرادات</th><th>نصيبه من المصروفات</th><th>نصيبه من صافي الربح</th><th>رصيد حسابه الجاري</th></tr></thead><tbody>'+
+            '<div style="overflow-x:auto;"><table><thead><tr><th>الشريك</th><th>النسبة %</th><th>نصيبه من الإيرادات</th><th>نصيبه من المحصل من العملاء</th><th>نصيبه من المصروفات</th><th>المتبقي بعد خصم المصاريف</th><th>نصيبه من صافي الربح</th><th>رصيد حسابه الجاري</th></tr></thead><tbody>'+
               (rep.partners.length ? rep.partners.map(function(p){
                 return '<tr><td>'+escapeHtml(p.name)+'</td><td class="mono">'+p.percentage+'%</td>'+
                   '<td class="amt credit">'+money(p.shareOfRevenue)+'</td>'+
+                  '<td class="amt credit">'+money(p.shareOfCollected)+'</td>'+
                   '<td class="amt debit">'+money(p.shareOfExpenses)+'</td>'+
+                  '<td>'+settlementHtml(p.settlement)+'</td>'+
                   '<td class="amt '+(p.shareOfNet>=0?'credit':'debit')+'">'+money(p.shareOfNet)+'</td>'+
                   '<td class="amt '+(p.currentAccountBalance>=0?'credit':'debit')+'">'+money(p.currentAccountBalance)+' '+balanceTag(p.currentAccountBalance)+'</td></tr>';
-              }).join('') : '<tr><td colspan="6" class="empty">لا يوجد شركاء في هذه الشركة</td></tr>')+
-            '</tbody></table></div>'
+              }).join('') : '<tr><td colspan="8" class="empty">لا يوجد شركاء في هذه الشركة</td></tr>')+
+            '</tbody></table></div><div class="muted-note" style="margin-top:8px;">'+SETTLEMENT_NOTE+'</div>'
           ) : '')+
 
           '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة (عمومية / إدارية / تسويقية / استثمارية / تمويلية)</h3>'+
@@ -1547,8 +1560,11 @@
 
     var shareRows = rep.partners.map(function(p){
       return '<tr><td>'+escapeHtml(p.name)+'</td><td class="mono">'+p.percentage+'%</td>'+
+        '<td class="amt credit">'+money(p.shareOfCollected)+'</td>'+
+        '<td class="amt debit">'+money(p.shareOfExpenses)+'</td>'+
+        '<td>'+settlementHtml(p.settlement)+'</td>'+
         '<td class="amt '+(p.shareOfNet>=0?'credit':'debit')+'">'+money(p.shareOfNet)+'</td></tr>';
-    }).join('') || '<tr><td colspan="3" class="empty">لا يوجد شركاء</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">لا يوجد شركاء</td></tr>';
 
     return '<div class="page-head"><h2>تقرير مشروع</h2><p>نظرة كاملة على أداء المشروع ونصيب كل شريك.</p></div>'+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="report-project-select">'+pOptions+'</select></div>'+
@@ -1556,10 +1572,13 @@
       '<div class="stat"><div class="label">إجمالي الإيرادات</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
       '<div class="stat"><div class="label">إجمالي المصروفات</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
       '<div class="stat"><div class="label">صافي الربح</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصل من العملاء</div><div class="val credit">'+money(rep.collected)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصل ناقص مصاريف المشروع</div><div class="val">'+settlementHtml(rep.collectedMinusExpenses)+'</div></div>'+
     '</div>'+
-    '<div class="panel"><div class="panel-head"><h3>نصيب الشركاء</h3></div><div class="panel-body" style="padding:0;">'+
-      '<table><thead><tr><th>الشريك</th><th>النسبة</th><th>نصيبه من صافي الربح</th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
+    '<div class="panel"><div class="panel-head"><h3>نصيب الشركاء</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>الشريك</th><th>النسبة</th><th>نصيبه من المحصل من العملاء</th><th>نصيبه من مصاريف المشروع</th><th>المتبقي بعد خصم المصاريف</th><th>نصيبه من صافي الربح</th></tr></thead><tbody>'+shareRows+'</tbody></table>'+
     '</div></div>'+
+    '<div class="muted-note">'+SETTLEMENT_NOTE+' (هنا على مستوى المشروع: مصاريف المشروع بس، ونسب الشركاء في المشروع.)</div>'+
     '<div class="muted-note">رصيد الحساب الجاري لكل شريك بقى على مستوى الشركة — شوفه من تبويب "الحساب الجاري".</div>';
   }
 
@@ -1628,6 +1647,55 @@
     return '<tr id="'+rowId+'" class="ledger-detail-row" style="display:none;"><td colspan="21" style="padding:10px 14px;background:#faf7ea;">'+
       '<table style="width:auto;min-width:600px;"><thead><tr><th>التاريخ</th><th>المبلغ</th><th>ملاحظات</th><th></th><th></th></tr></thead><tbody>'+body+'</tbody></table>'+
     '</td></tr>';
+  }
+
+  function salesGroupedReportHtml(sales, collectedBySale){
+    if(!sales.length) return '';
+    var cmp = function(a,b){ return String(a).localeCompare(String(b),'ar',{numeric:true}); };
+    var rows = sales.map(function(s){
+      var value = Number(s.sale_amount)||0, collected = collectedBySale[s.id]||0;
+      return { building:(s.item_building||s.building_no||'').trim()||'بدون عمارة', type:(s.item_unit||'').trim()||'غير محدد',
+               unit:s.item_name, customer:s.customer_name||'—', value:value, collected:collected, remaining:value-collected };
+    });
+    var sum = function(list){ return list.reduce(function(t,r){ return {n:t.n+1, value:t.value+r.value, collected:t.collected+r.collected, remaining:t.remaining+r.remaining}; }, {n:0,value:0,collected:0,remaining:0}); };
+    var totalRow = function(label, t, cls){
+      return '<tr class="'+cls+'"><td colspan="2">'+label+' <span class="mono">('+t.n+' وحدة)</span></td><td class="amt">'+money(t.value)+'</td><td class="amt">'+money(t.collected)+'</td><td class="amt">'+money(t.remaining)+'</td></tr>';
+    };
+    var group = function(list, key){ var o = {}; list.forEach(function(r){ (o[r[key]] = o[r[key]] || []).push(r); }); return o; };
+    var body = '', byB = group(rows,'building');
+    Object.keys(byB).sort(cmp).forEach(function(b){
+      body += '<tr class="ea-g0"><td colspan="5">العمارة: '+escapeHtml(b)+'</td></tr>';
+      var byT = group(byB[b],'type');
+      Object.keys(byT).sort(cmp).forEach(function(t){
+        body += '<tr class="ea-g2"><td colspan="5" style="padding-right:26px;">النوع: '+escapeHtml(t)+'</td></tr>';
+        byT[t].sort(function(x,y){ return cmp(x.unit,y.unit); }).forEach(function(r){
+          body += '<tr><td style="padding-right:44px;">'+escapeHtml(r.unit)+'</td><td>'+escapeHtml(r.customer)+'</td><td class="amt">'+money(r.value)+'</td>'+
+            '<td class="amt credit">'+money(r.collected)+'</td><td class="amt '+(r.remaining>0.001?'debit':'')+'">'+money(r.remaining)+'</td></tr>';
+        });
+        body += totalRow('إجمالي '+escapeHtml(t)+' في '+escapeHtml(b), sum(byT[t]), 'ea-g3');
+      });
+      body += totalRow('إجمالي العمارة '+escapeHtml(b), sum(byB[b]), 'ea-g1');
+    });
+    var all = sum(rows), byTypeAll = group(rows,'type');
+    var typeRows = Object.keys(byTypeAll).sort(cmp).map(function(t){
+      var x = sum(byTypeAll[t]);
+      return '<tr><td>'+escapeHtml(t)+'</td><td class="mono">'+x.n+'</td><td class="amt">'+money(x.value)+'</td><td class="amt credit">'+money(x.collected)+'</td><td class="amt '+(x.remaining>0.001?'debit':'')+'">'+money(x.remaining)+'</td></tr>';
+    }).join('');
+    return '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تقرير المبيعات حسب العمارة والنوع</h2></div>'+
+    '<div class="grid-stats">'+
+      '<div class="stat"><div class="label">عدد الوحدات المباعة</div><div class="val teal">'+all.n+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي قيمة الوحدات</div><div class="val">'+money(all.value)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي المحصل من العملاء</div><div class="val credit">'+money(all.collected)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي المتبقي لدى العملاء</div><div class="val '+(all.remaining>0.001?'debit':'credit')+'">'+money(all.remaining)+'</div></div>'+
+    '</div>'+
+    '<div class="panel"><div class="panel-head"><h3>المبيعات مرتبة بالعمارة ثم النوع، بإجمالي كل نوع وكل عمارة</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>الوحدة</th><th>العميل</th><th>قيمة الوحدة</th><th>المحصل من العميل</th><th>المتبقي لدى العميل</th></tr></thead><tbody>'+body+
+      totalRow('الإجمالي الكلي', all, 'ea-grand')+'</tbody></table>'+
+    '</div></div>'+
+    '<div class="panel"><div class="panel-head"><h3>الإجمالي حسب النوع (كل العمارات)</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+      '<table><thead><tr><th>النوع</th><th>عدد الوحدات</th><th>قيمة الوحدات</th><th>المحصل من العملاء</th><th>المتبقي</th></tr></thead><tbody>'+typeRows+
+      '<tr class="ea-grand"><td>الإجمالي الكلي</td><td class="mono">'+all.n+'</td><td class="amt">'+money(all.value)+'</td><td class="amt">'+money(all.collected)+'</td><td class="amt">'+money(all.remaining)+'</td></tr></tbody></table>'+
+    '</div></div>';
   }
 
   function pageCustomerAccountsHtml(sales, collectedBySale){
@@ -1738,7 +1806,13 @@
     var itemOptions = itemOptionsForBuilding(selectedBuilding);
 
     var totalSold=0, totalCollected=0;
-    var saleRows = sales.map(function(s){
+    var natCmp = function(a,b){ return String(a).localeCompare(String(b),'ar',{numeric:true}); };
+    var salesOrdered = sales.slice().sort(function(a,b){
+      return natCmp(a.item_building||a.building_no||'\uFFFF', b.item_building||b.building_no||'\uFFFF')
+          || natCmp(a.item_unit||'\uFFFF', b.item_unit||'\uFFFF')
+          || natCmp(a.item_name, b.item_name);
+    });
+    var saleRows = salesOrdered.map(function(s){
       var collected = collectedBySale[s.id]||0; // المحصل من العميل (dated sub-ledger)
       var remaining = Number(s.sale_amount) - collected;
       var totalDues = Number(s.sale_amount) + Number(s.garage_value||0) + Number(s.maintenance_value||0) + Number(s.utilities_value||0);
@@ -1848,6 +1922,7 @@
         '<th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th><th></th>'+
       '</tr></thead><tbody>'+saleRows+'</tbody></table>'+
     '</div></div>'+
+    salesGroupedReportHtml(sales, collectedBySale)+
     '<div class="panel"><div class="panel-head"><h3>'+(uiState.editingSaleId?'تعديل بيانات عقد البيع':'تسجيل عملية بيع جديدة')+'</h3></div><div class="panel-body">'+
       (items.length===0 ? '<div class="empty">أضف صنفًا للمخزون أولاً.</div>' :
       (function(){
@@ -2900,6 +2975,9 @@
         '<div class="stat"><div class="label">منها: تكاليف المشاريع</div><div class="val debit">'+money(cache.meExpCompany.projectCostsTotal)+'</div></div>'+
         '<div class="stat"><div class="label">نسبتك في الشركة</div><div class="val teal">'+cache.meExpCompany.percentage+'%</div></div>'+
         '<div class="stat"><div class="label">نصيبك من مصاريف الشركة</div><div class="val teal">'+money(cache.meExpCompany.myShare)+'</div></div>'+
+        '<div class="stat"><div class="label">إجمالي المحصل من العملاء</div><div class="val credit">'+money(cache.meExpCompany.collected)+'</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من المحصل</div><div class="val credit">'+money(cache.meExpCompany.myCollectedShare)+'</div></div>'+
+        '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من المصاريف</div><div class="val">'+settlementHtml(cache.meExpCompany.settlement)+'</div></div>'+
       '</div>'+
       partnerExpenseTableHtml(cache.meExpCompany, 'مصاريف الشركة ككل — البنود الرئيسية ونصيبك منها')
     ) : '')+
@@ -2916,6 +2994,10 @@
           '<div class="stat"><div class="label">نسبتك في المشروع</div><div class="val teal">'+(myShare.percentage||0)+'%</div></div>'+
           '<div class="stat"><div class="label">نصيبك من الإيرادات</div><div class="val credit">'+money(rep.revenue*(myShare.percentage||0)/100)+'</div></div>'+
           '<div class="stat"><div class="label">نصيبك من مصاريف المشروع</div><div class="val debit">'+money(cache.meExpProject?cache.meExpProject.myShare:rep.expense*(myShare.percentage||0)/100)+'</div></div>'+
+          (cache.meExpProject ? (
+            '<div class="stat"><div class="label">نصيبك من المحصل من العملاء</div><div class="val credit">'+money(cache.meExpProject.myCollectedShare)+'</div></div>'+
+            '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من مصاريف المشروع</div><div class="val">'+settlementHtml(cache.meExpProject.settlement)+'</div></div>'
+          ) : '')+
           '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
         '</div>'+
         partnerExpenseTableHtml(cache.meExpProject, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+

@@ -769,9 +769,18 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
     GROUP BY pr.id, pr.name
     ORDER BY pr.id
   `, [companyId])).rows;
+  // "المحصل من العملاء" = every collection recorded against the sales of this company's projects
+  const collectedByProject = {};
+  (await pool.query(`
+    SELECT s.project_id, COALESCE(SUM(c.amount), 0) AS t
+    FROM sale_collections c JOIN inventory_sales s ON s.id = c.sale_id JOIN projects p ON p.id = s.project_id
+    WHERE p.company_id = $1 GROUP BY s.project_id
+  `, [companyId])).rows.forEach(r => { collectedByProject[r.project_id] = Number(r.t); });
   const projects = projRows.map(p => ({
-    id: p.id, name: p.name, revenue: Number(p.revenue), expense: Number(p.expense), net: Number(p.revenue) - Number(p.expense)
+    id: p.id, name: p.name, revenue: Number(p.revenue), expense: Number(p.expense), net: Number(p.revenue) - Number(p.expense),
+    collected: collectedByProject[p.id] || 0
   }));
+  const totalCollected = projects.reduce((s, p) => s + p.collected, 0);
   const totalProjectRevenue = projects.reduce((s, p) => s + p.revenue, 0);
   const totalProjectExpense = projects.reduce((s, p) => s + p.expense, 0);
   const grandNet = totalProjectRevenue - (companyExpenses + totalProjectExpense);
@@ -796,6 +805,10 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
     openingBalance: Number(s.opening_balance),
     shareOfRevenue: totalProjectRevenue * (Number(s.percentage) / 100),
     shareOfExpenses: grandTotalExpenses * (Number(s.percentage) / 100),
+    shareOfCollected: totalCollected * (Number(s.percentage) / 100),
+    // > 0: his share of what customers paid covers his share of the expenses with a surplus ("له");
+    // < 0: it doesn't cover it, so that much is still on him ("عليه")
+    settlement: (totalCollected - grandTotalExpenses) * (Number(s.percentage) / 100),
     shareOfNet: grandNet * (Number(s.percentage) / 100),
     currentAccountBalance: (caMap[s.partner_id] || 0) + Number(s.opening_balance)
   }));
@@ -809,6 +822,8 @@ app.get('/api/companies/:id/report', auth, requireAdmin, async (req, res) => {
     totalProjectRevenue,
     totalProjectExpense,
     grandTotalExpenses,
+    totalCollected,
+    collectedMinusExpenses: totalCollected - grandTotalExpenses,
     grandNet,
     totalAssetsCost,
     totalAssetsBookValue
@@ -1543,8 +1558,13 @@ app.get('/api/me/expense-summary', auth, async (req, res) => {
       });
       const pct = Number(cp.percentage) / 100;
       const roll = await rollupForPartner(Object.keys(byCat).map(category => ({ category, total: byCat[category] })), pct);
+      const collected = Number((await pool.query(`
+        SELECT COALESCE(SUM(c.amount), 0) AS t FROM sale_collections c
+        JOIN inventory_sales s ON s.id = c.sale_id JOIN projects p ON p.id = s.project_id WHERE p.company_id = $1
+      `, [companyId])).rows[0].t);
       return res.json({ scope: 'company', name: cp.name, percentage: Number(cp.percentage),
-        projectCostsTotal, companyLevelTotal, ...roll });
+        projectCostsTotal, companyLevelTotal, collected, myCollectedShare: collected * pct,
+        settlement: collected * pct - roll.myShare, ...roll });
     }
     if (projectId) {
       const pp = (await pool.query(
@@ -1558,7 +1578,11 @@ app.get('/api/me/expense-summary', auth, async (req, res) => {
       `, [projectId])).rows;
       const pct = Number(pp.percentage) / 100;
       const roll = await rollupForPartner(rows.map(r => ({ category: r.category, total: Number(r.total) })), pct);
-      return res.json({ scope: 'project', name: pp.name, percentage: Number(pp.percentage), ...roll });
+      const collected = Number((await pool.query(`
+        SELECT COALESCE(SUM(c.amount), 0) AS t FROM sale_collections c JOIN inventory_sales s ON s.id = c.sale_id WHERE s.project_id = $1
+      `, [projectId])).rows[0].t);
+      return res.json({ scope: 'project', name: pp.name, percentage: Number(pp.percentage),
+        collected, myCollectedShare: collected * pct, settlement: collected * pct - roll.myShare, ...roll });
     }
     res.status(400).json({ error: 'companyId أو projectId مطلوب' });
   } catch (e) {
@@ -1587,14 +1611,21 @@ app.get('/api/report/:projectId', auth, async (req, res) => {
     WHERE pp.project_id = $1
   `, [projectId]);
 
+  const collected = Number((await pool.query(`
+    SELECT COALESCE(SUM(c.amount), 0) AS t FROM sale_collections c JOIN inventory_sales s ON s.id = c.sale_id WHERE s.project_id = $1
+  `, [projectId])).rows[0].t);
+
   const partners = sharesRes.rows.map(s => ({
     partnerId: s.partner_id,
     name: s.name,
     percentage: Number(s.percentage),
-    shareOfNet: net * (Number(s.percentage) / 100)
+    shareOfNet: net * (Number(s.percentage) / 100),
+    shareOfCollected: collected * (Number(s.percentage) / 100),
+    shareOfExpenses: expense * (Number(s.percentage) / 100),
+    settlement: (collected - expense) * (Number(s.percentage) / 100)
   }));
 
-  res.json({ projectId: Number(projectId), revenue, expense, net, partners });
+  res.json({ projectId: Number(projectId), revenue, expense, net, collected, collectedMinusExpenses: collected - expense, partners });
 });
 
 // ---------------------------------------------------------------------------
