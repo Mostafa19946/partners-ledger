@@ -1530,10 +1530,19 @@ app.get('/api/me/companies', auth, async (req, res) => {
 // ---------------------------------------------------------------------------
 const UNCLASSIFIED_LABEL = 'بنود أخرى غير مصنفة';
 
-async function rollupForPartner(categoryTotals, pct) {
+async function loadExpenseIndex() {
   const items = (await pool.query('SELECT id, name, parent_id FROM expense_items ORDER BY sort_order, id')).rows;
   const byId = {}, byNorm = {};
   items.forEach((it, idx) => { it.rank = idx; byId[it.id] = it; byNorm[normCat(it.name)] = it; });
+  return { byId, byNorm };
+}
+
+async function rollupForPartner(categoryTotals, pct) {
+  return rollupWith(await loadExpenseIndex(), categoryTotals, pct);
+}
+
+function rollupWith(index, categoryTotals, pct) {
+  const { byId, byNorm } = index;
   const pathOf = (node) => {
     const path = []; let cur = node, guard = 0;
     while (cur && guard++ < 50) { path.unshift(cur); cur = cur.parent_id == null ? null : byId[cur.parent_id]; }
@@ -1625,6 +1634,66 @@ app.get('/api/me/expense-summary', auth, async (req, res) => {
   } catch (e) {
     console.error('partner expense summary failed', e);
     res.status(500).json({ error: 'تعذر تحميل ملخص المصاريف' });
+  }
+});
+
+// Partner-facing period analysis of expenses (day / week / month / year): for every period the total, the partner's
+// own share, and the same main-items breakdown as the summary (never line-level detail).
+app.get('/api/me/expense-periods', auth, async (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
+  try {
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    // the bucket expression only ever comes from this fixed list, never from the request
+    const bucket = (col) => ({
+      day: `to_char(${col}, 'YYYY-MM-DD')`,
+      week: `to_char(date_trunc('week', ${col}::timestamp), 'YYYY-MM-DD')`,
+      month: `to_char(${col}, 'YYYY-MM')`,
+      year: `to_char(${col}, 'YYYY')`
+    })[period];
+    const companyId = parseInt(req.query.companyId, 10);
+    const projectId = parseInt(req.query.projectId, 10);
+    let name, pctNum, rows;
+    if (companyId) {
+      const cp = (await pool.query(
+        `SELECT cp.percentage, c.name FROM company_partners cp JOIN companies c ON c.id = cp.company_id
+         WHERE cp.company_id=$1 AND cp.partner_id=$2`, [companyId, req.user.partnerId]
+      )).rows[0];
+      if (!cp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
+      name = cp.name; pctNum = Number(cp.percentage);
+      rows = (await pool.query(`
+        SELECT p, category, SUM(amount) AS total FROM (
+          SELECT ${bucket('e.entry_date')} AS p, COALESCE(NULLIF(TRIM(e.category), ''), 'أخرى') AS category, e.amount
+          FROM entries e JOIN projects pr ON pr.id = e.project_id WHERE e.kind = 'expense' AND pr.company_id = $1
+          UNION ALL
+          SELECT ${bucket('entry_date')}, COALESCE(NULLIF(TRIM(category), ''), 'أخرى'), amount FROM company_expenses WHERE company_id = $1
+        ) t GROUP BY p, category
+      `, [companyId])).rows;
+    } else if (projectId) {
+      const pp = (await pool.query(
+        `SELECT pp.percentage, pr.name FROM project_partners pp JOIN projects pr ON pr.id = pp.project_id
+         WHERE pp.project_id=$1 AND pp.partner_id=$2`, [projectId, req.user.partnerId]
+      )).rows[0];
+      if (!pp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذا المشروع' });
+      name = pp.name; pctNum = Number(pp.percentage);
+      rows = (await pool.query(`
+        SELECT ${bucket('entry_date')} AS p, COALESCE(NULLIF(TRIM(category), ''), 'أخرى') AS category, SUM(amount) AS total
+        FROM entries WHERE kind = 'expense' AND project_id = $1 GROUP BY 1, 2
+      `, [projectId])).rows;
+    } else {
+      return res.status(400).json({ error: 'companyId أو projectId مطلوب' });
+    }
+    const pct = pctNum / 100, index = await loadExpenseIndex();
+    const byPeriod = {};
+    rows.forEach(r => { (byPeriod[r.p] = byPeriod[r.p] || []).push({ category: r.category, total: Number(r.total) }); });
+    const periods = Object.keys(byPeriod).sort().reverse().map(key => {
+      const roll = rollupWith(index, byPeriod[key], pct);
+      return { key, total: roll.total, myShare: roll.myShare, groups: roll.groups };
+    }).filter(x => Math.abs(x.total) >= 0.005);
+    const total = periods.reduce((t, x) => t + x.total, 0);
+    res.json({ scope: companyId ? 'company' : 'project', name, period, percentage: pctNum, total, myShare: total * pct, periods });
+  } catch (e) {
+    console.error('partner expense periods failed', e);
+    res.status(500).json({ error: 'تعذر تحميل تحليل الفترات' });
   }
 });
 

@@ -151,6 +151,16 @@
   var adminTab = 'companies';
   var partnerActiveProject = null;
   var partnerActiveCompany = null;
+  var partnerTab = 'account', partnerData = null;
+  var partnerPeriod = 'month', partnerPeriodScope = 'company', partnerPeriods = null;
+  var PARTNER_NAV = [
+    {key:'account', label:'حسابي الجاري', icon:'💳'},
+    {key:'companyExp', label:'مصاريف الشركة', icon:'🏢'},
+    {key:'project', label:'أداء المشروع', icon:'📁'},
+    {key:'periods', label:'تحليل الفترات للمصاريف', icon:'📈'},
+    {key:'sales', label:'تقرير المبيعات', icon:'🏷️'},
+    {key:'inventory', label:'تقرير المخزون', icon:'📦'}
+  ];
   var cache = { partners:[], projects:[], companies:[], entries:{}, currentAccount:{}, meProjects:[], meCompanies:[], meExpCompany:null, meExpProject:null, report:{},
     expensePayments:{}, inventoryItems:{}, inventorySales:{}, inventoryCollections:{},
     companyExpenses:{}, companyReports:{}, eaData:{}, expenseItems:[], eaLedger:{}, caLedger:{}, companyAssets:{} };
@@ -2947,6 +2957,9 @@
       '<div class="sidebar-top"><button class="logout-link" id="logout-btn">تسجيل الخروج</button></div>'+
       '<div class="brand"><div class="mark">ش</div><h1>دفتر الشركاء</h1></div>'+
       '<div class="who">مرحبًا<b>'+escapeHtml(currentUser.name)+'</b></div>'+
+      '<div class="nav-row">'+PARTNER_NAV.map(function(n){
+        return '<div class="nav-item'+(partnerTab===n.key?' active':'')+'" data-ptab="'+n.key+'"><span>'+n.icon+'</span><span>'+n.label+'</span></div>';
+      }).join('')+'</div>'+
       '<div class="sidebar-foot">'+
         '<button class="btn ghost sm" id="p-settings-btn">تغيير كلمة المرور</button>'+
       '</div>'+
@@ -2955,8 +2968,16 @@
   function bindPartnerShell(){
     document.getElementById('logout-btn').addEventListener('click', logout);
     document.getElementById('p-settings-btn').addEventListener('click', function(){
+      document.querySelectorAll('[data-ptab]').forEach(function(n){ n.classList.remove('active'); });
       document.getElementById('main-area').innerHTML = pageSettings();
       bindAdminPageEvents();
+    });
+    document.querySelectorAll('[data-ptab]').forEach(function(el){
+      el.addEventListener('click', function(){
+        partnerTab = el.getAttribute('data-ptab');
+        document.querySelectorAll('[data-ptab]').forEach(function(n){ n.classList.toggle('active', n.getAttribute('data-ptab')===partnerTab); });
+        if(partnerData) renderPartnerPage(); else loadPartnerDashboard();
+      });
     });
     loadPartnerDashboard();
   }
@@ -2992,24 +3013,15 @@
       calls.push(partnerActiveProject ? api('GET','/me/expense-summary?projectId='+partnerActiveProject) : null);
       var results = await Promise.all(calls);
       cache.meExpCompany = results[8]; cache.meExpProject = results[9];
-      var rep = results[0], entries = results[1], expPayments = results[2],
-        invItems = results[3], invSales = results[4], invCollections = results[5],
-        ledger = results[6], caTx = results[7];
-      main.innerHTML = renderPartnerDashboard(rep, ledger, caTx, entries, expPayments, invItems, invSales, invCollections);
-      document.querySelectorAll('[data-project]').forEach(function(chip){
-        chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
-      });
-      document.querySelectorAll('[data-company]').forEach(function(chip){
-        chip.addEventListener('click', function(){ partnerActiveCompany = Number(chip.getAttribute('data-company')); loadPartnerDashboard(); });
-      });
-      bindLedgerToggles();
+      partnerData = { rep:results[0], entries:results[1], expPayments:results[2], invItems:results[3], invSales:results[4],
+                      invCollections:results[5], ledger:results[6], caTx:results[7] };
+      renderPartnerPage();
     }catch(e){
       main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>';
     }
   }
-  function partnerExpenseTableHtml(sum, title){
-    if(!sum) return '';
-    var rows = sum.groups.map(function(g){
+  function partnerGroupRowsHtml(groups){
+    return groups.map(function(g){
       var head = '<tr class="ea-g1"><td>'+escapeHtml(g.name)+'</td><td class="amt">'+money(g.total)+'</td><td class="amt teal">'+money(g.myShare)+'</td></tr>';
       var kids = g.children.map(function(c){
         return '<tr><td style="padding-right:30px;">'+escapeHtml(c.name)+'</td><td class="amt">'+money(c.total)+'</td><td class="amt">'+money(c.myShare)+'</td></tr>';
@@ -3017,118 +3029,196 @@
       var direct = (g.children.length && Math.abs(g.direct)>=0.005)
         ? '<tr><td style="padding-right:30px;color:var(--ink-soft);">مصروفات مسجلة على «'+escapeHtml(g.name)+'» مباشرة</td><td class="amt">'+money(g.direct)+'</td><td class="amt">'+money(g.directShare)+'</td></tr>' : '';
       return head+kids+direct;
-    }).join('') || '<tr><td colspan="3" class="empty">لا توجد مصاريف مسجلة بعد</td></tr>';
+    }).join('');
+  }
+  function partnerExpenseTableHtml(sum, title){
+    if(!sum) return '';
+    var rows = partnerGroupRowsHtml(sum.groups) || '<tr><td colspan="3" class="empty">لا توجد مصاريف مسجلة بعد</td></tr>';
     return '<div class="panel"><div class="panel-head"><h3>'+title+'</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
       '<table><thead><tr><th>البند</th><th>الإجمالي</th><th>نصيبك ('+sum.percentage+'%)</th></tr></thead><tbody>'+rows+
       '<tr class="ea-grand"><td>الإجمالي</td><td class="amt">'+money(sum.total)+'</td><td class="amt">'+money(sum.myShare)+'</td></tr></tbody></table>'+
     '</div></div>';
   }
 
-  function renderPartnerDashboard(rep, ledger, caTx, entries, expPayments, invItems, invSales, invCollections){
-    var myShare = rep ? (rep.partners.find(function(p){ return p.partnerId === currentUser.partnerId; }) || {}) : {};
-    var activeProj = cache.meProjects.find(function(p){return p.id===partnerActiveProject;});
-    var activeCompany = cache.meCompanies.find(function(c){return c.id===partnerActiveCompany;});
-    var projectChips = cache.meProjects.map(function(p){
-      return '<div class="chip'+(p.id===partnerActiveProject?' active':'')+'" data-project="'+p.id+'">'+escapeHtml(p.name)+'</div>';
-    }).join('');
-    var companyChips = cache.meCompanies.map(function(c){
-      return '<div class="chip'+(c.id===partnerActiveCompany?' active':'')+'" data-company="'+c.id+'">'+escapeHtml(c.name)+'</div>';
-    }).join('');
+  // ---------------- Partner pages (each one on its own) ----------------
+  function partnerHead(title, note){ return '<div class="page-head"><h2>'+title+'</h2><p>'+(note||'البيانات محدّثة مباشرة من قاعدة البيانات المركزية.')+'</p></div>'; }
+  function partnerChipsHtml(kind){
+    if(kind==='company'){
+      return cache.meCompanies.length>1 ? '<div class="select-projects">'+cache.meCompanies.map(function(c){
+        return '<div class="chip'+(c.id===partnerActiveCompany?' active':'')+'" data-company="'+c.id+'">'+escapeHtml(c.name)+'</div>'; }).join('')+'</div>' : '';
+    }
+    return cache.meProjects.length>1 ? '<div class="select-projects">'+cache.meProjects.map(function(p){
+      return '<div class="chip'+(p.id===partnerActiveProject?' active':'')+'" data-project="'+p.id+'">'+escapeHtml(p.name)+'</div>'; }).join('')+'</div>' : '';
+  }
+  function bindPartnerChips(){
+    document.querySelectorAll('[data-project]').forEach(function(chip){
+      chip.addEventListener('click', function(){ partnerActiveProject = Number(chip.getAttribute('data-project')); loadPartnerDashboard(); });
+    });
+    document.querySelectorAll('[data-company]').forEach(function(chip){
+      chip.addEventListener('click', function(){ partnerActiveCompany = Number(chip.getAttribute('data-company')); loadPartnerDashboard(); });
+    });
+  }
 
-    var entriesRows = entries.filter(function(e){ return e.kind==='revenue'; }).map(function(e){
-      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+
-        entryAmountCell(e.kind, e.amount)+'</tr>';
-    }).join('') || '<tr><td colspan="3" class="empty">لا توجد إيرادات مسجلة على هذا المشروع بعد</td></tr>';
+  function renderPartnerPage(){
+    var main = document.getElementById('main-area'), D = partnerData;
+    if(!main || !D) return;
+    var html = '';
+    if(partnerTab==='account') html = ppAccount(D);
+    else if(partnerTab==='companyExp') html = ppCompanyExp(D);
+    else if(partnerTab==='project') html = ppProject(D);
+    else if(partnerTab==='sales') html = ppSales(D);
+    else if(partnerTab==='inventory') html = ppInventory(D);
+    else if(partnerTab==='periods'){
+      var key = partnerPeriodKey();
+      if(!partnerPeriods || partnerPeriods.key!==key){ loadPartnerPeriods(); return; }
+      html = ppPeriods();
+    }
+    main.innerHTML = html;
+    bindPartnerChips(); bindLedgerToggles();
+    if(partnerTab==='periods') bindPartnerPeriodControls();
+  }
 
-    // Inventory summary (read-only)
-    var soldByItem = {}; invSales.forEach(function(s){ soldByItem[s.item_id]=(soldByItem[s.item_id]||0)+Number(s.quantity); });
-    var collectedBySale = {}; invCollections.forEach(function(c){ collectedBySale[c.sale_id]=(collectedBySale[c.sale_id]||0)+Number(c.amount); });
-    var invRows = invItems.map(function(it){
-      var sold = soldByItem[it.id]||0;
-      var remainingQty = Number(it.quantity_in)-sold;
-      var statusTag = it.status ? '<span class="tag cat">'+escapeHtml(it.status)+'</span>' : '—';
-      return '<tr><td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
-        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td><td class="mono">'+remainingQty+'</td><td>'+statusTag+'</td></tr>';
-    }).join('') || '<tr><td colspan="6" class="empty">لا يوجد مخزون مسجل لهذا المشروع</td></tr>';
-    var totalSold=0, totalCollected=0;
-    invSales.forEach(function(s){ totalSold += Number(s.sale_amount); totalCollected += collectedBySale[s.id]||0; });
-    var totalRemainingCollection = totalSold-totalCollected;
+  function ppAccount(D){
+    var co = cache.meCompanies.find(function(c){ return c.id===partnerActiveCompany; });
+    if(!co) return partnerHead('حسابي الجاري')+'<div class="error-box">لسه متربطش بأي شركة، فمفيش حساب جاري ليك. تواصل مع المدير المسؤول.</div>';
+    var led = D.ledger;
+    return partnerHead('حسابي الجاري')+partnerChipsHtml('company')+
+      '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(co.name)+'»</div>'+
+        '<div class="v">'+money(led?led.closingBalanceYear:0)+' '+balanceTag(led?led.closingBalanceYear:0)+'</div></div>'+
+        '<div class="pct">نسبتك في الشركة: '+(co.percentage||0)+'%</div></div>'+
+      (led ? ledgerTableHtml({
+        title:'كشف حساب جاريك في «'+escapeHtml(co.name)+'» — مدين / دائن / رصيد',
+        year:led.year, months:led.months, openingBalance:led.openingBalanceYear, closingBalance:led.closingBalanceYear,
+        transactions: D.caTx||[], debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
+        openingLabel:'رصيد أول '+led.year, closingLabel:'رصيد آخر '+led.year
+      }) : '');
+  }
 
-    // Expense remaining summary (read-only)
-    var paidByEntry = {}; expPayments.forEach(function(p){ paidByEntry[p.entry_id]=(paidByEntry[p.entry_id]||0)+Number(p.amount); });
-    var expEntries = entries.filter(function(e){return e.kind==='expense';});
-    var totalExpense=0, totalPaid=0;
-    expEntries.forEach(function(e){ totalExpense+=Number(e.amount); totalPaid += paidByEntry[e.id]||0; });
-    var totalExpRemaining = totalExpense-totalPaid;
-
-    return '<div class="page-head"><h2>حسابك</h2><p>البيانات محدّثة مباشرة من قاعدة البيانات المركزية.</p></div>'+
-
-    // ---- Current account: tied to the company directly, independent of which project is selected below ----
-    '<h3 style="margin:4px 0 10px;font-size:15px;color:var(--teal-deep);">حسابك الجاري</h3>'+
-    (cache.meCompanies.length>1 ? '<div class="select-projects">'+companyChips+'</div>' : '')+
-    (activeCompany ? (
-      '<div class="balance-banner"><div><div class="l">رصيد حسابك الجاري في «'+escapeHtml(activeCompany.name)+'»</div>'+
-        '<div class="v">'+money(ledger?ledger.closingBalanceYear:0)+' '+balanceTag(ledger?ledger.closingBalanceYear:0)+'</div></div>'+
-        '<div class="pct">نسبتك في الشركة: '+(activeCompany.percentage||0)+'%</div></div>'
-    ) : (
-      '<div class="error-box">لسه متربطش بأي شركة، فمفيش حساب جاري ليك. تواصل مع المدير المسؤول.</div>'
-    ))+
-    (ledger ? ledgerTableHtml({
-      title:'كشف حساب جاريك في «'+escapeHtml(activeCompany?activeCompany.name:'')+'» — مدين / دائن / رصيد',
-      year:ledger.year, months:ledger.months, openingBalance:ledger.openingBalanceYear, closingBalance:ledger.closingBalanceYear,
-      transactions: caTx||[],
-      debitLabel:'مدين (سحب)', creditLabel:'دائن (إيداع/أرباح)',
-      openingLabel:'رصيد أول '+ledger.year, closingLabel:'رصيد آخر '+ledger.year
-    }) : '')+
-
-    // ---- Company expenses as a whole (company-level + all its projects' costs), main items only ----
-    (cache.meExpCompany ? (
-      '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة ككل — «'+escapeHtml(cache.meExpCompany.name)+'»</h3>'+
+  function ppCompanyExp(D){
+    var x = cache.meExpCompany;
+    if(!x) return partnerHead('مصاريف الشركة')+'<div class="empty">لسه متربطش بأي شركة.</div>';
+    return partnerHead('مصاريف الشركة ككل — «'+escapeHtml(x.name)+'»', 'مصاريف الشركة نفسها مضافًا إليها تكاليف مشاريعها، بالبنود الرئيسية ونصيبك منها.')+partnerChipsHtml('company')+
       '<div class="grid-stats">'+
-        '<div class="stat"><div class="label">إجمالي مصاريف الشركة ككل</div><div class="val debit">'+money(cache.meExpCompany.total)+'</div></div>'+
-        '<div class="stat"><div class="label">منها: مصاريف الشركة نفسها</div><div class="val debit">'+money(cache.meExpCompany.companyLevelTotal)+'</div></div>'+
-        '<div class="stat"><div class="label">منها: تكاليف المشاريع</div><div class="val debit">'+money(cache.meExpCompany.projectCostsTotal)+'</div></div>'+
-        '<div class="stat"><div class="label">نسبتك في الشركة</div><div class="val teal">'+cache.meExpCompany.percentage+'%</div></div>'+
-        '<div class="stat"><div class="label">نصيبك من مصاريف الشركة</div><div class="val teal">'+money(cache.meExpCompany.myShare)+'</div></div>'+
-        '<div class="stat"><div class="label">إجمالي المحصل من العملاء</div><div class="val credit">'+money(cache.meExpCompany.collected)+'</div></div>'+
-        '<div class="stat"><div class="label">نصيبك من المحصل</div><div class="val credit">'+money(cache.meExpCompany.myCollectedShare)+'</div></div>'+
-        '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من المصاريف</div><div class="val">'+settlementHtml(cache.meExpCompany.settlement)+'</div></div>'+
+        '<div class="stat"><div class="label">إجمالي مصاريف الشركة ككل</div><div class="val debit">'+money(x.total)+'</div></div>'+
+        '<div class="stat"><div class="label">منها: مصاريف الشركة نفسها</div><div class="val debit">'+money(x.companyLevelTotal)+'</div></div>'+
+        '<div class="stat"><div class="label">منها: تكاليف المشاريع</div><div class="val debit">'+money(x.projectCostsTotal)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك في الشركة</div><div class="val teal">'+x.percentage+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من مصاريف الشركة</div><div class="val teal">'+money(x.myShare)+'</div></div>'+
+        '<div class="stat"><div class="label">إجمالي المحصل من العملاء</div><div class="val credit">'+money(x.collected)+'</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من المحصل</div><div class="val credit">'+money(x.myCollectedShare)+'</div></div>'+
+        '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من المصاريف</div><div class="val">'+settlementHtml(x.settlement)+'</div></div>'+
       '</div>'+
-      partnerExpenseTableHtml(cache.meExpCompany, 'مصاريف الشركة ككل — البنود الرئيسية ونصيبك منها')
-    ) : '')+
+      partnerExpenseTableHtml(x, 'مصاريف الشركة ككل — البنود الرئيسية ونصيبك منها')+
+      '<div class="muted-note">'+SETTLEMENT_NOTE+'</div>';
+  }
 
-    // ---- Project performance: separate section, its own project selector ----
-    (cache.meProjects.length ? (
-      '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">أداء المشروع</h3>'+
-      (cache.meProjects.length>1 ? '<div class="select-projects">'+projectChips+'</div>' : '')+
-      (rep ? (
-        '<div class="grid-stats">'+
-          '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
-          '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
-          '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
-          '<div class="stat"><div class="label">نسبتك في المشروع</div><div class="val teal">'+(myShare.percentage||0)+'%</div></div>'+
-          '<div class="stat"><div class="label">نصيبك من الإيرادات</div><div class="val credit">'+money(rep.revenue*(myShare.percentage||0)/100)+'</div></div>'+
-          '<div class="stat"><div class="label">نصيبك من مصاريف المشروع</div><div class="val debit">'+money(cache.meExpProject?cache.meExpProject.myShare:rep.expense*(myShare.percentage||0)/100)+'</div></div>'+
-          (cache.meExpProject ? (
-            '<div class="stat"><div class="label">نصيبك من المحصل من العملاء</div><div class="val credit">'+money(cache.meExpProject.myCollectedShare)+'</div></div>'+
-            '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من مصاريف المشروع</div><div class="val">'+settlementHtml(cache.meExpProject.settlement)+'</div></div>'
-          ) : '')+
-          '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(myShare.shareOfNet||0)+'</div></div>'+
-        '</div>'+
-        partnerExpenseTableHtml(cache.meExpProject, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+
-        '<div class="panel"><div class="panel-head"><h3>إيرادات المشروع</h3></div><div class="panel-body" style="padding:0;">'+
-          '<table><thead><tr><th>التاريخ</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+entriesRows+'</tbody></table>'+
-        '</div></div>'+
-        inventoryGroupedReportHtml(invItems, invSales)+
-        salesGroupedReportHtml(invSales, collectedBySale)+
-        '<div class="grid-stats">'+
-          '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
-          '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
-          '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemainingCollection>0.001?'debit':'credit')+'">'+money(totalRemainingCollection)+'</div></div>'+
-          '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
-        '</div>'
-      ) : '<div class="panel"><div class="empty">جارِ التحميل…</div></div>')
-    ) : '');
+  function ppProject(D){
+    var rep = D.rep, proj = cache.meProjects.find(function(p){ return p.id===partnerActiveProject; });
+    if(!rep || !proj) return partnerHead('أداء المشروع')+'<div class="empty">مفيش مشروع متربط بحسابك.</div>';
+    var my = rep.partners.find(function(p){ return p.partnerId===currentUser.partnerId; }) || {};
+    var pct = my.percentage||0, x = cache.meExpProject;
+    var revRows = D.entries.filter(function(e){ return e.kind==='revenue'; }).map(function(e){
+      return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+entryAmountCell(e.kind, e.amount)+'</tr>';
+    }).join('') || '<tr><td colspan="3" class="empty">لا توجد إيرادات مسجلة على هذا المشروع بعد</td></tr>';
+    var paid = {}; D.expPayments.forEach(function(p){ paid[p.entry_id]=(paid[p.entry_id]||0)+Number(p.amount); });
+    var tExp=0, tPaid=0; D.entries.filter(function(e){ return e.kind==='expense'; }).forEach(function(e){ tExp+=Number(e.amount); tPaid+=paid[e.id]||0; });
+    var remExp = tExp - tPaid;
+    return partnerHead('أداء المشروع — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
+      '<div class="grid-stats">'+
+        '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
+        '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
+        '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك في المشروع</div><div class="val teal">'+pct+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من الإيرادات</div><div class="val credit">'+money(rep.revenue*pct/100)+'</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من مصاريف المشروع</div><div class="val debit">'+money(x?x.myShare:rep.expense*pct/100)+'</div></div>'+
+        (x ? '<div class="stat"><div class="label">نصيبك من المحصل من العملاء</div><div class="val credit">'+money(x.myCollectedShare)+'</div></div>'+
+             '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من مصاريف المشروع</div><div class="val">'+settlementHtml(x.settlement)+'</div></div>' : '')+
+        '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(my.shareOfNet||0)+'</div></div>'+
+        '<div class="stat"><div class="label">المتبقي من المصروفات (غير المسدد)</div><div class="val '+(remExp>0.001?'debit':'credit')+'">'+money(remExp)+'</div></div>'+
+      '</div>'+
+      partnerExpenseTableHtml(x, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+
+      '<div class="panel"><div class="panel-head"><h3>إيرادات المشروع</h3></div><div class="panel-body" style="padding:0;">'+
+        '<table><thead><tr><th>التاريخ</th><th>البيان</th><th>المبلغ</th></tr></thead><tbody>'+revRows+'</tbody></table></div></div>';
+  }
+
+  function ppSales(D){
+    var proj = cache.meProjects.find(function(p){ return p.id===partnerActiveProject; });
+    if(!proj) return partnerHead('تقرير المبيعات')+'<div class="empty">مفيش مشروع متربط بحسابك.</div>';
+    var col = {}; D.invCollections.forEach(function(c){ col[c.sale_id]=(col[c.sale_id]||0)+Number(c.amount); });
+    var sold=0, got=0; D.invSales.forEach(function(s){ sold += Number(s.sale_amount); got += col[s.id]||0; });
+    return partnerHead('تقرير المبيعات — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
+      (D.invSales.length ? salesGroupedReportHtml(D.invSales, col).replace(/^<div class="page-head"[^>]*>.*?<\/div>/, '') : '<div class="panel"><div class="empty">لا توجد مبيعات مسجلة على هذا المشروع بعد</div></div>');
+  }
+
+  function ppInventory(D){
+    var proj = cache.meProjects.find(function(p){ return p.id===partnerActiveProject; });
+    if(!proj) return partnerHead('تقرير المخزون')+'<div class="empty">مفيش مشروع متربط بحسابك.</div>';
+    return partnerHead('تقرير المخزون — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
+      (D.invItems.length ? inventoryGroupedReportHtml(D.invItems, D.invSales).replace(/^<div class="page-head"[^>]*>.*?<\/div>/, '') : '<div class="panel"><div class="empty">لا يوجد مخزون مسجل لهذا المشروع</div></div>');
+  }
+
+  // ---- period analysis of expenses (company as a whole, or one project) ----
+  function partnerPeriodScopeId(){
+    if(partnerPeriodScope==='project' && partnerActiveProject) return 'p'+partnerActiveProject;
+    if(partnerActiveCompany) return 'c'+partnerActiveCompany;
+    return partnerActiveProject ? 'p'+partnerActiveProject : '';
+  }
+  function partnerPeriodKey(){ return partnerPeriodScopeId()+'|'+partnerPeriod; }
+  async function loadPartnerPeriods(){
+    var main = document.getElementById('main-area'), id = partnerPeriodScopeId();
+    if(!id){ main.innerHTML = partnerHead('تحليل الفترات للمصاريف')+'<div class="empty">مفيش شركة ولا مشروع متربط بحسابك.</div>'; return; }
+    main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
+    try{
+      var q = (id.charAt(0)==='c' ? 'companyId=' : 'projectId=') + id.slice(1) + '&period=' + partnerPeriod;
+      var data = await api('GET','/me/expense-periods?'+q);
+      partnerPeriods = { key: partnerPeriodKey(), data: data };
+      if(partnerTab==='periods') renderPartnerPage();
+    }catch(e){ main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>'; }
+  }
+  function periodLabelFromKey(period, key){
+    if(period==='year') return 'سنة '+key;
+    if(period==='month'){ var m = key.split('-'); return EA_MONTHS[Number(m[1])-1]+' '+m[0]; }
+    if(period==='week') return 'أسبوع '+fmtDate(key);
+    return fmtDate(key);
+  }
+  function ppPeriods(){
+    var d = partnerPeriods.data;
+    var hasCompany = !!partnerActiveCompany, hasProject = !!partnerActiveProject;
+    var coName = (cache.meCompanies.find(function(c){ return c.id===partnerActiveCompany; })||{}).name;
+    var prName = (cache.meProjects.find(function(p){ return p.id===partnerActiveProject; })||{}).name;
+    var scopeChips = '<div class="select-projects">'+
+      (hasCompany ? '<div class="chip'+(d.scope==='company'?' active':'')+'" data-pscope="company">الشركة ككل — '+escapeHtml(coName||'')+'</div>' : '')+
+      (hasProject ? '<div class="chip'+(d.scope==='project'?' active':'')+'" data-pscope="project">المشروع فقط — '+escapeHtml(prName||'')+'</div>' : '')+'</div>';
+    var periodChips = [['day','يومي'],['week','أسبوعي'],['month','شهري'],['year','سنوي']].map(function(p){
+      return '<div class="period-chip'+(partnerPeriod===p[0]?' active':'')+'" data-pperiod="'+p[0]+'">'+p[1]+'</div>'; }).join('');
+    var rows = d.periods.map(function(p, i){
+      var id = 'pp-'+i;
+      return '<tr class="ledger-month-row" data-ledger-toggle="'+id+'" style="cursor:pointer;"><td><span class="ledger-caret" id="caret-'+id+'">▸</span> '+escapeHtml(periodLabelFromKey(d.period, p.key))+'</td>'+
+        '<td class="amt debit">'+money(p.total)+'</td><td class="amt teal">'+money(p.myShare)+'</td></tr>'+
+        '<tr id="'+id+'" class="ledger-detail-row" style="display:none;"><td colspan="3" style="padding:10px 14px;background:#faf7ea;">'+
+          '<table><thead><tr><th>البند</th><th>الإجمالي</th><th>نصيبك ('+d.percentage+'%)</th></tr></thead><tbody>'+partnerGroupRowsHtml(p.groups)+'</tbody></table>'+
+        '</td></tr>';
+    }).join('') || '<tr><td colspan="3" class="empty">لا توجد مصاريف مسجلة بعد</td></tr>';
+    return partnerHead('تحليل الفترات للمصاريف — «'+escapeHtml(d.name)+'»', 'إجمالي المصاريف في كل فترة ونصيبك منها. اضغط على أي فترة لعرض بنودها الرئيسية.')+scopeChips+
+      (d.scope==='company' ? partnerChipsHtml('company') : partnerChipsHtml('project'))+
+      '<div class="period-toggle">'+periodChips+'</div>'+
+      '<div class="grid-stats">'+
+        '<div class="stat"><div class="label">إجمالي المصاريف في كل الفترات</div><div class="val debit">'+money(d.total)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك</div><div class="val teal">'+d.percentage+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من المصاريف</div><div class="val teal">'+money(d.myShare)+'</div></div>'+
+        '<div class="stat"><div class="label">عدد الفترات</div><div class="val">'+d.periods.length+'</div></div>'+
+      '</div>'+
+      '<div class="panel"><div class="panel-head"><h3>المصاريف حسب الفترة</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+        '<table><thead><tr><th>الفترة</th><th>إجمالي المصاريف</th><th>نصيبك</th></tr></thead><tbody>'+rows+
+        '<tr class="ea-grand"><td>الإجمالي</td><td class="amt">'+money(d.total)+'</td><td class="amt">'+money(d.myShare)+'</td></tr></tbody></table></div></div>';
+  }
+  function bindPartnerPeriodControls(){
+    document.querySelectorAll('[data-pperiod]').forEach(function(c){
+      c.addEventListener('click', function(){ partnerPeriod = c.getAttribute('data-pperiod'); renderPartnerPage(); });
+    });
+    document.querySelectorAll('[data-pscope]').forEach(function(c){
+      c.addEventListener('click', function(){ partnerPeriodScope = c.getAttribute('data-pscope'); renderPartnerPage(); });
+    });
   }
 
   render();
