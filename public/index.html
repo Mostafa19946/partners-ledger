@@ -886,7 +886,8 @@
     {key:'analytics', label:'تحليل الفترات', icon:'📈'},
     {key:'expenseAnalysis', label:'تحليل المصاريف', icon:'🧾'},
     {key:'expenseItems', label:'بنود المصاريف', icon:'🗂️'},
-    {key:'inventory', label:'المخزون والتحصيل', icon:'📦'},
+    {key:'inventory', label:'المخزون', icon:'📦'},
+    {key:'sales', label:'المبيعات والتحصيل', icon:'🏷️'},
     {key:'current', label:'الحساب الجاري', icon:'💳'},
     {key:'report', label:'تقرير مشروع', icon:'📊'},
     {key:'settings', label:'إعدادات حسابي', icon:'⚙️'}
@@ -931,7 +932,8 @@
     else if(adminTab==='analytics') main.innerHTML = pageAnalytics();
     else if(adminTab==='expenseAnalysis') main.innerHTML = pageExpenseAnalysis();
     else if(adminTab==='expenseItems') main.innerHTML = pageExpenseItems();
-    else if(adminTab==='inventory') main.innerHTML = pageInventory();
+    else if(adminTab==='inventory') main.innerHTML = pageInventory('inventory');
+    else if(adminTab==='sales') main.innerHTML = pageInventory('sales');
     else if(adminTab==='current') main.innerHTML = pageCurrentAccount();
     else if(adminTab==='report') main.innerHTML = pageReport();
     else if(adminTab==='settings') main.innerHTML = pageSettings();
@@ -946,8 +948,8 @@
   async function loadAdminPage(force){
     var main = document.getElementById('main-area');
     var tabKey = adminTab;
-    if(['entries','analytics','inventory','report'].indexOf(adminTab)>=0){
-      var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', report:'reportProjectId'};
+    if(['entries','analytics','inventory','sales','report'].indexOf(adminTab)>=0){
+      var pidMap = {entries:'entriesProjectId', analytics:'analyticsProjectId', inventory:'invProjectId', sales:'invProjectId', report:'reportProjectId'};
       tabKey = adminTab + ':' + (uiState[pidMap[adminTab]] || (cache.projects[0] && cache.projects[0].id) || '');
     }
     if(adminTab==='entries') tabKey = 'entries:'+uiState.entriesScope+':'+(uiState.entriesScope==='company'
@@ -1033,7 +1035,7 @@
           cache.entries[uiState.analyticsProjectId] = await api('GET','/entries?projectId='+uiState.analyticsProjectId);
         }
       }
-      else if(adminTab==='inventory'){
+      else if(adminTab==='inventory' || adminTab==='sales'){
         cache.projects = cache.projects.length? cache.projects : await api('GET','/projects');
         if(cache.projects.length){
           if(!uiState.invProjectId) uiState.invProjectId = cache.projects[0].id;
@@ -2069,8 +2071,9 @@
     '<div class="muted-note">اضغط على اسم العميل لعرض وحداته، وزرار "تحصيل" بجنب كل وحدة لإضافة دفعة جديدة مباشرة.</div>';
   }
 
-  function pageInventory(){
-    if(cache.projects.length===0) return '<div class="page-head"><h2>المخزون والتحصيل</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
+  function pageInventory(mode){
+    mode = mode==='sales' ? 'sales' : 'inventory';
+    if(cache.projects.length===0) return '<div class="page-head"><h2>'+(mode==='sales'?'المبيعات والتحصيل':'المخزون')+'</h2></div><div class="panel"><div class="empty">أنشئ مشروعًا أولاً.</div></div>';
     var pid = uiState.invProjectId;
     var pOptions = cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==pid?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('');
     var items = cache.inventoryItems[pid] || [];
@@ -2252,10 +2255,8 @@
     }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصروفات مسجلة</td></tr>';
     var totalExpRemaining = totalExpense-totalPaid;
 
-    return '<div class="page-head"><h2>المخزون والتحصيل</h2><p>ما تم بيعه وما تبقى من المخزون، وما تم تحصيله من المبيعات وما تبقى، وكذلك المتبقي من المصروفات.</p></div>'+
-    '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>'+
-
-    '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+    var pProj = '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>';
+    var pInvTable = '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
       (staleSold.length ? '<div class="muted-note" style="margin:0 18px 12px;">من هنا ورايح حالة الوحدة بتتحول لـ«مباع» تلقائي أول ما تتسجل عليها عملية بيع. لكن فيه <b>'+staleSold.length+'</b> وحدة اتباعت قبل كده وحالتها لسه مش «مباع». '+
         '<button class="btn sm" id="sync-sold-status" type="button" style="margin-right:8px;">تحديثها لـ«مباع»</button></div>' : '')+
       '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:0 18px;">'+
@@ -2269,8 +2270,8 @@
       '<datalist id="inv-unit-types">'+Array.from(new Set(items.map(function(it){ return it.unit; }).filter(Boolean))).map(function(u){ return '<option value="'+escapeHtml(u)+'">'; }).join('')+'</datalist>'+
       '<table><thead><tr>'+selectColHeader('inv-items')+'<th>الصنف</th><th>الوحدة</th><th>العمارة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
       '<div class="muted-note" style="padding:8px 18px;">تقدر تعدّل العمارة، الحالة، السعر، والمساحة مباشرة في الجدول واضغط "حفظ".</div>'+
-    '</div></div>'+
-    '<div class="panel"><div class="panel-head"><h3>إضافة صنف جديد للمخزون</h3></div><div class="panel-body">'+
+    '</div></div>';
+    var pInvForm = '<div class="panel"><div class="panel-head"><h3>إضافة صنف جديد للمخزون</h3></div><div class="panel-body">'+
       '<form id="add-item-form"><div class="form-row three">'+
         '<div class="field"><label>اسم الصنف</label><input type="text" id="ni-name" required></div>'+
         '<div class="field"><label>الوحدة</label><input type="text" id="ni-unit" placeholder="قطعة / كرتونة / كجم"></div>'+
@@ -2284,14 +2285,13 @@
         '<div class="field"><label>مساحة الجاردن (اختياري)</label><input type="number" id="ni-garden-area" min="0" step="0.01"></div>'+
       '</div>'+
       '<button class="btn" type="submit" style="margin-top:10px;">إضافة الصنف</button></form>'+
-    '</div></div>'+
-
-    '<div class="grid-stats">'+
+    '</div></div>';
+    var pSalesStats = '<div class="grid-stats">'+
       '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
       '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
       '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemaining>0.001?'debit':'credit')+'">'+money(totalRemaining)+'</div></div>'+
-    '</div>'+
-    '<div class="panel"><div class="panel-head"><h3>المبيعات والتحصيلات</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+    '</div>';
+    var pSalesTable = '<div class="panel"><div class="panel-head"><h3>المبيعات والتحصيلات</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('inv-sales', '/inventory/sales/bulk-date')+'</div>'+
       '<table><thead><tr>'+selectColHeader('inv-sales')+
         '<th>رقم العمارة</th><th>رقم الوحدة</th><th>تاريخ التعاقد</th><th>اسم العميل</th>'+
@@ -2302,11 +2302,11 @@
         '<th>اجمالي المستحقات</th><th>فروق تحصيل</th><th>نسبة المقدم</th>'+
         '<th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th><th></th>'+
       '</tr></thead><tbody>'+saleRows+'</tbody></table>'+
-    '</div></div>'+
-    salesGroupedReportHtml(sales, collectedBySale)+
-    priceMismatchHtml(sales)+
-    inventoryGroupedReportHtml(items, sales)+
-    '<div class="panel"><div class="panel-head"><h3>'+(uiState.editingSaleId?'تعديل بيانات عقد البيع':'تسجيل عملية بيع جديدة')+'</h3></div><div class="panel-body">'+
+    '</div></div>';
+    var pSalesReports = salesGroupedReportHtml(sales, collectedBySale)+
+    priceMismatchHtml(sales);
+    var pInvReport = inventoryGroupedReportHtml(items, sales);
+    var pSaleForm = '<div class="panel"><div class="panel-head"><h3>'+(uiState.editingSaleId?'تعديل بيانات عقد البيع':'تسجيل عملية بيع جديدة')+'</h3></div><div class="panel-body">'+
       (items.length===0 ? '<div class="empty">أضف صنفًا للمخزون أولاً.</div>' :
       (function(){
         var editing = uiState.editingSaleId ? sales.find(function(s){return s.id===uiState.editingSaleId;}) : null;
@@ -2348,30 +2348,33 @@
         (editing?'<button class="btn ghost" type="button" id="cancel-edit-sale">إلغاء</button>':'')+
         '</form>';
       })())+
-    '</div></div>'+
-
-    pageCustomerAccountsHtml(sales, collectedBySale)+
-
-    '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تفصيل التحصيل على الفترات</h2></div>'+
+    '</div></div>';
+    var pCust = pageCustomerAccountsHtml(sales, collectedBySale);
+    var pPeriods = '<div class="page-head" style="margin-top:8px;"><h2 style="font-size:18px;">تفصيل التحصيل على الفترات</h2></div>'+
     '<div class="period-toggle">'+periodChips+'</div>'+
-    '<div class="panel"><div class="panel-body">'+collGroupsHtml+'</div></div>'+
-
-    '<div class="grid-stats">'+
+    '<div class="panel"><div class="panel-body">'+collGroupsHtml+'</div></div>';
+    var pExpense = '<div class="grid-stats">'+
       '<div class="stat"><div class="label">إجمالي المصروفات</div><div class="val debit">'+money(totalExpense)+'</div></div>'+
       '<div class="stat"><div class="label">المدفوع من المصروفات</div><div class="val credit">'+money(totalPaid)+'</div></div>'+
       '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
     '</div>'+
     '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
-    '</div></div>'+
-    importPanelHtml('import-sales', 'استيراد المبيعات من إكسيل — المشروع: '+escapeHtml((cache.projects.find(function(p){return p.id==pid;})||{}).name||''), '',
+    '</div></div>';
+    var pImportSales = importPanelHtml('import-sales', 'استيراد المبيعات من إكسيل — المشروع: '+escapeHtml((cache.projects.find(function(p){return p.id==pid;})||{}).name||''), '',
       '<div class="muted-note">بيقرا تقرير المبيعات زي ما هو (الهيدر يقدر يكون في أي صف من أول 30 صف، وتقدر ترفع ملف فيه أكتر من شيت). '+
       'اللازم: <b>رقم الوحدة</b> (لازم يطابق كود الوحدة في مخزون المشروع) و<b>تاريخ التعاقد</b>. الباقي اختياري: اسم العميل، قيمة الوحدة (لو فاضية بتتاخد من سعر المخزون)، المحصل من العميل، نسبة المقدم، الجراج، دفعة الصيانة، المرافق، فروق تحصيل، ملاحظات. '+
-      'أعمدة البنك والمتبقي والإجماليات بتتجاهل. الوحدة المباعة قبل كده بتترفض، فالاستيراد مرتين مبيكررش حاجة.</div>')+
-    '<div class="field" style="max-width:320px;"><label>المشروع اللي هيتم الاستيراد له</label><select id="import-inv-target-project">'+
+      'أعمدة البنك والمتبقي والإجماليات بتتجاهل. الوحدة المباعة قبل كده بتترفض، فالاستيراد مرتين مبيكررش حاجة.</div>');
+    var pImportInv = '<div class="field" style="max-width:320px;"><label>المشروع اللي هيتم الاستيراد له</label><select id="import-inv-target-project">'+
       cache.projects.map(function(p){return '<option value="'+p.id+'"'+(p.id==pid?' selected':'')+'>'+escapeHtml(p.name)+'</option>';}).join('')+
     '</select></div>'+
     importPanelHtml('import-inv', 'استيراد المخزون من إكسيل', 'اسم الصنف، الوحدة، الكمية، سعر الوحدة (وأعمدة اختيارية: الحالة، العمارة، مساحة الوحدة، مساحة الجاردن)');
+
+    // the same data feeds two pages, so each one is short and focused on its own data entry
+    var pHeadInv = '<div class="page-head"><h2>المخزون</h2><p>أصناف المشروع بأنواعها وحالاتها وأسعارها وما اتباع منها. سجّلي وعدّلي واستوردي الأصناف من هنا. المبيعات والتحصيل في صفحة «المبيعات والتحصيل».</p></div>';
+    var pHeadSales = '<div class="page-head"><h2>المبيعات والتحصيل</h2><p>سجّلي عمليات البيع والتحصيلات، وتابعي المتبقي على كل عميل. الأصناف نفسها في صفحة «المخزون».</p></div>';
+    if(mode==='sales') return pHeadSales + pProj + pSaleForm + pSalesStats + pSalesTable + pSalesReports + pCust + pPeriods + pExpense + pImportSales;
+    return pHeadInv + pProj + pInvForm + pInvTable + pInvReport + pImportInv;
   }
 
   function eaScopeLabel(scope){
@@ -3104,6 +3107,7 @@
       ev.preventDefault();
       var body = { projectId: uiState.invProjectId, name: document.getElementById('ni-name').value.trim(),
         unit: document.getElementById('ni-unit').value.trim(), quantityIn: parseFloat(document.getElementById('ni-qty').value),
+        building: document.getElementById('ni-building').value.trim() || null,
         unitPrice: parseFloat(document.getElementById('ni-price').value)||0,
         status: document.getElementById('ni-status').value.trim() || null,
         netArea: document.getElementById('ni-net-area').value ? parseFloat(document.getElementById('ni-net-area').value) : null,
