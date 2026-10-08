@@ -827,6 +827,23 @@
     if(Math.abs(v)<0.005) return '<span class="amt">متعادل — 0.00</span>';
     return v>0 ? '<span class="amt credit">له '+money(v)+'</span>' : '<span class="amt debit">عليه '+money(-v)+'</span>';
   }
+  // How much of a project's expenses is really still unpaid. Only real expenses (amount > 0) can be unpaid.
+  // Cancellations / refunds are negative expense rows (e.g. a cancelled cheque): they are reported on their own and
+  // never counted as "unpaid" (before, they showed up as a negative balance under the "unpaid" label).
+  function expenseSettlement(entries, paidByEntry){
+    var r = { gross:0, credits:0, creditRows:0, paid:0, unpaid:0, overpaid:0 };
+    entries.forEach(function(e){
+      if(e.kind!=='expense') return;
+      var amt = Number(e.amount)||0, paid = paidByEntry[e.id]||0;
+      if(amt > 0){
+        r.gross += amt; r.paid += paid;
+        var rem = amt - paid;
+        if(rem > 0.005) r.unpaid += rem; else if(rem < -0.005) r.overpaid += -rem;
+      } else if(amt < 0){ r.credits += amt; r.creditRows++; }
+    });
+    r.net = r.gross + r.credits;
+    return r;
+  }
   var SETTLEMENT_NOTE = 'المحصل من العملاء = اللي اتسجل كتحصيل على مبيعات الوحدات. بيتقسم على الشركاء بنسبهم، وبيتخصم منه نصيب كل شريك من المصاريف: لو الناتج موجب فالمحصل غطّى نصيبه وزيادة (له)، ولو سالب فالمحصل مغطّاش نصيبه من المصاريف والمتبقي عليه (عليه).';
   function balanceLabel(n){ return (Number(n)||0) >= 0 ? 'دائن' : 'مدين'; }
   function balanceTag(n){
@@ -1654,6 +1671,7 @@
       if(uiState.entriesTypeFilter!=='all' && e.kind!==uiState.entriesTypeFilter) return false;
       if(uiState.entriesPayFilter!=='all'){
         if(e.kind!=='expense') return false;
+        if(Number(e.amount) < 0) return false;                 // cancellations / refunds are neither paid nor unpaid
         var rem = Number(e.amount) - (paidByEntry[e.id]||0);
         if(uiState.entriesPayFilter==='unpaid' && !(rem>0.001)) return false;
         if(uiState.entriesPayFilter==='paid' && rem>0.001) return false;
@@ -1666,10 +1684,15 @@
       if(e.kind==='expense'){
         var paid = paidByEntry[e.id]||0;
         var remaining = Number(e.amount) - paid;
-        extra = '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>'+
-          '<td class="amt credit">'+money(paid)+'</td>'+
-          '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
-          '<td><button class="btn ghost sm" data-pay-entry="'+e.id+'" data-remaining="'+remaining.toFixed(2)+'">تسديد</button></td>';
+        var catCell = '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>';
+        if(Number(e.amount) < 0){
+          extra = catCell+'<td class="amt">—</td><td><span class="st-chip st-part" title="مصروف اتلغى أو اتسترد، مش مطلوب سداده">إلغاء / مرتجع</span></td><td></td>';
+        } else {
+          extra = catCell+
+            '<td class="amt credit">'+money(paid)+'</td>'+
+            '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
+            '<td><button class="btn ghost sm" data-pay-entry="'+e.id+'" data-remaining="'+remaining.toFixed(2)+'">تسديد</button></td>';
+        }
       } else {
         extra = '<td>—</td><td>—</td><td>—</td><td></td>';
       }
@@ -2483,17 +2506,16 @@
     var payments = cache.expensePayments[pid] || [];
     var paidByEntry = {};
     payments.forEach(function(p){ paidByEntry[p.entry_id] = (paidByEntry[p.entry_id]||0) + Number(p.amount); });
-    var totalExpense=0, totalPaid=0;
+    var xs = expenseSettlement(expEntries, paidByEntry);
     var expRows = expEntries.map(function(e){
-      var paid = paidByEntry[e.id]||0;
+      var paid = paidByEntry[e.id]||0, isCredit = Number(e.amount) < 0;
       var remaining = Number(e.amount)-paid;
-      totalExpense += Number(e.amount); totalPaid += paid;
       return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+(e.category?escapeHtml(e.category):'—')+'</td>'+
-        '<td>'+escapeHtml(e.description||'—')+'</td><td class="amt debit">'+money(e.amount)+'</td>'+
-        '<td class="amt credit">'+money(paid)+'</td>'+
-        '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td></tr>';
+        '<td>'+escapeHtml(e.description||'—')+'</td><td class="amt '+(isCredit?'credit':'debit')+'">'+money(e.amount)+'</td>'+
+        '<td class="amt credit">'+(isCredit?'—':money(paid))+'</td>'+
+        (isCredit ? '<td><span class="st-chip st-part">إلغاء / مرتجع</span></td>'
+                  : '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>')+'</tr>';
     }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصروفات مسجلة</td></tr>';
-    var totalExpRemaining = totalExpense-totalPaid;
 
     var pProj = '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>المشروع</label><select id="inv-project-select">'+pOptions+'</select></div>';
     var pInvTable = '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
@@ -2576,10 +2598,13 @@
     '<div class="period-toggle">'+periodChips+'</div>'+
     '<div class="panel"><div class="panel-body">'+collGroupsHtml+'</div></div>';
     var pExpense = '<div class="grid-stats">'+
-      '<div class="stat"><div class="label">إجمالي المصروفات</div><div class="val debit">'+money(totalExpense)+'</div></div>'+
-      '<div class="stat"><div class="label">المدفوع من المصروفات</div><div class="val credit">'+money(totalPaid)+'</div></div>'+
-      '<div class="stat"><div class="label">المتبقي من المصروفات</div><div class="val '+(totalExpRemaining>0.001?'debit':'credit')+'">'+money(totalExpRemaining)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي المصروفات'+(xs.creditRows?' (قبل الإلغاءات)':'')+'</div><div class="val debit">'+money(xs.gross)+'</div></div>'+
+      (xs.creditRows ? '<div class="stat"><div class="label">إلغاءات ومرتجعات ('+xs.creditRows+') — مش داخلة في غير المسدد</div><div class="val credit">'+money(xs.credits)+'</div></div>' : '')+
+      '<div class="stat"><div class="label">المدفوع من المصروفات</div><div class="val credit">'+money(xs.paid)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي من المصروفات (غير المسدد)</div><div class="val '+(xs.unpaid>0.001?'debit':'credit')+'">'+money(xs.unpaid)+'</div></div>'+
+      (xs.overpaid>0.005 ? '<div class="stat"><div class="label">مسدد بالزيادة عن المصروف</div><div class="val">'+money(xs.overpaid)+'</div></div>' : '')+
     '</div>'+
+    (xs.creditRows ? '<div class="muted-note" style="margin:-14px 0 16px;">صافي المصروفات بعد الإلغاءات والمرتجعات: <b>'+money(xs.net)+'</b>. المصروفات اللي اتلغت (زي إلغاء شيك) بتتسجل بالسالب ومبتتحسبش «غير مسدد».</div>' : '')+
     '<div class="panel"><div class="panel-head"><h3>المتبقي من المصروفات</h3></div><div class="panel-body" style="padding:0;">'+
       '<table><thead><tr><th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>'+expRows+'</tbody></table>'+
     '</div></div>';
@@ -3834,8 +3859,7 @@
       return '<tr><td>'+fmtDate(e.entry_date)+'</td><td>'+escapeHtml(e.description||'—')+'</td>'+entryAmountCell(e.kind, e.amount)+'</tr>';
     }).join('') || '<tr><td colspan="3" class="empty">لا توجد إيرادات مسجلة على هذا المشروع بعد</td></tr>';
     var paid = {}; D.expPayments.forEach(function(p){ paid[p.entry_id]=(paid[p.entry_id]||0)+Number(p.amount); });
-    var tExp=0, tPaid=0; D.entries.filter(function(e){ return e.kind==='expense'; }).forEach(function(e){ tExp+=Number(e.amount); tPaid+=paid[e.id]||0; });
-    var remExp = tExp - tPaid;
+    var xs = expenseSettlement(D.entries, paid);
     return partnerHead('أداء المشروع — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
       '<div class="grid-stats">'+
         '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
@@ -3847,7 +3871,9 @@
         (x ? '<div class="stat"><div class="label">نصيبك من المحصل من العملاء</div><div class="val credit">'+money(x.myCollectedShare)+'</div></div>'+
              '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من مصاريف المشروع</div><div class="val">'+settlementHtml(x.settlement)+'</div></div>' : '')+
         '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(my.shareOfNet||0)+'</div></div>'+
-        '<div class="stat"><div class="label">المتبقي من المصروفات (غير المسدد)</div><div class="val '+(remExp>0.001?'debit':'credit')+'">'+money(remExp)+'</div></div>'+
+        '<div class="stat"><div class="label">المتبقي من المصروفات (غير المسدد)</div><div class="val '+(xs.unpaid>0.001?'debit':'credit')+'">'+money(xs.unpaid)+'</div></div>'+
+        (xs.creditRows ? '<div class="stat"><div class="label">إلغاءات ومرتجعات مصروفات (زي شيكات ملغاة) — مش داخلة في غير المسدد</div><div class="val credit">'+money(xs.credits)+'</div></div>' : '')+
+        (xs.overpaid>0.005 ? '<div class="stat"><div class="label">مسدد بالزيادة عن المصروف</div><div class="val">'+money(xs.overpaid)+'</div></div>' : '')+
       '</div>'+
       partnerExpenseTableHtml(x, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+
       '<div class="panel"><div class="panel-head"><h3>إيرادات المشروع</h3></div><div class="panel-body" style="padding:0;">'+
