@@ -136,6 +136,32 @@
   .modal-box h3{margin:0 0 14px;font-size:17px;color:var(--teal-deep);}
   .modal-actions{display:flex;gap:10px;margin-top:14px;}
   .modal-error{color:var(--debit);font-size:13px;min-height:18px;margin-top:6px;}
+  .seg{display:inline-flex;background:#ece6d4;border-radius:12px;padding:4px;gap:4px;margin-bottom:14px;}
+  .seg button{border:0;background:transparent;padding:9px 20px;border-radius:9px;font:inherit;font-weight:700;color:var(--ink-soft);cursor:pointer;}
+  .seg button.active{background:var(--teal);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,.18);}
+  .qc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;}
+  .qc-info{margin:12px 0;padding:12px 14px;background:#f6f1e2;border:1px dashed var(--brass);border-radius:10px;font-size:13.5px;line-height:1.9;}
+  .qc-info b{font-family:'IBM Plex Mono',monospace;}
+  .reg-wrap{border:1px solid var(--line);border-radius:var(--radius);background:var(--paper-raised);overflow:auto;max-height:78vh;}
+  .reg-table{width:100%;border-collapse:separate;border-spacing:0;font-size:13.5px;}
+  .reg-table thead th{position:sticky;top:0;background:var(--teal);color:#fff;z-index:2;padding:10px 12px;text-align:right;font-size:12.5px;white-space:nowrap;}
+  .reg-table td{padding:9px 12px;border-bottom:1px solid #eee7d3;vertical-align:middle;}
+  .reg-table tr.sale-row:hover td{background:#fbf8ee;}
+  .reg-table tr.bld-head td{background:var(--teal-deep);color:#fff;font-weight:800;padding:11px 14px;cursor:pointer;}
+  .reg-table tr.typ-head td{background:#efe8d2;font-weight:700;padding:8px 14px 8px 14px;}
+  .reg-table tr.reg-grand td{background:var(--teal-deep);color:#fff;font-weight:900;}
+  .reg-table .chipline{font-weight:600;font-size:12px;opacity:.92;margin-right:10px;}
+  .reg-table .caret{display:inline-block;width:16px;transition:transform .15s;}
+  .reg-table tr.collapsed .caret{transform:rotate(90deg);}
+  .reg-table .act-col{white-space:nowrap;text-align:left;}
+  .pbar{height:7px;background:#e6dfc8;border-radius:5px;overflow:hidden;min-width:90px;margin-top:4px;}
+  .pbar i{display:block;height:100%;background:var(--credit);}
+  .st-chip{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11.5px;font-weight:700;white-space:nowrap;}
+  .st-full{background:#dcefe3;color:#1f6b3d;} .st-part{background:#fbeccb;color:#8a5a00;} .st-none{background:#f6d9d6;color:#9b2c22;}
+  .det-grid{display:grid;grid-template-columns:minmax(380px,1.3fr) minmax(260px,1fr);gap:18px;align-items:start;}
+  .det-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;}
+  .det-kv span:nth-child(odd){color:var(--ink-soft);}
+  @media (max-width:860px){.det-grid{grid-template-columns:1fr;}}
   .print-bar{display:flex;justify-content:flex-end;margin-bottom:10px;}
   .print-only{display:none;}
   @media print{
@@ -156,6 +182,10 @@
     thead{display:table-header-group;}
     tr{break-inside:avoid;}
     .ea-table thead th,.ea-table td:first-child{position:static !important;}
+    .reg-wrap{overflow:visible !important;max-height:none !important;}
+    .reg-table thead th{position:static !important;}
+    .reg-table .act-col,.seg{display:none !important;}
+    .reg-table tr.ledger-detail-row{display:none !important;}
     .ea-table{min-width:0 !important;font-size:9px !important;}
     .ea-table th,.ea-table td{padding:3px 4px !important;}
     .ea-table td:first-child{min-width:0 !important;max-width:none !important;}
@@ -205,7 +235,7 @@
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
     invStatusFilter:'all', invBuildingFilter:'all', invTypeFilter:'all', invGroupBy:'type', caTxPartnerFilter:'all', caTxKindFilter:'all',
-    filters:{}, assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
+    filters:{}, salesEntryTab:'collection', qcBuilding:'', sf:{b:'',t:'',st:'',q:'',from:'',to:''}, assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var ITEM_STATUSES = ['متاح','محجوز','مباع','مغلق'];
@@ -1156,7 +1186,8 @@
     var hdr = document.createElement('div'); hdr.className = 'print-only print-header';
     hdr.innerHTML = '<div class="ph-brand">دفتر الشركاء</div><div class="ph-title">'+escapeHtml(title)+'</div><div class="ph-date">تاريخ الطباعة: '+fmtDate(todayStr())+'</div>';
     main.insertBefore(hdr, main.firstChild);
-    var hidden = [];
+    var hidden = [], unfolded = [];
+    main.querySelectorAll('tr[data-folded="1"]').forEach(function(r){ if(!r.classList.contains('ledger-detail-row')){ r.style.display = ''; unfolded.push(r); } });   // folded sections still print
     main.querySelectorAll('.panel').forEach(function(pn){          // data-entry forms and import panels aren't part of a report
       if(pn.querySelector('form, input[type=file]') && !pn.classList.contains('no-print')){ pn.classList.add('no-print'); hidden.push(pn); }
     });
@@ -1165,6 +1196,7 @@
       if(cleaned) return; cleaned = true;
       if(hdr.parentNode) hdr.parentNode.removeChild(hdr);
       hidden.forEach(function(pn){ pn.classList.remove('no-print'); });
+      unfolded.forEach(function(r){ r.style.display = 'none'; });
       window.removeEventListener('afterprint', cleanup);
     };
     window.addEventListener('afterprint', cleanup);
@@ -1866,21 +1898,209 @@
     '</div></div>';
   }
 
-  function saleCollectionsDetailRow(saleId, allCollections){
-    var rowId = 'coll-detail-'+saleId;
-    var mine = allCollections.filter(function(c){ return c.sale_id===saleId; })
-      .sort(function(a,b){ return (a.collection_date||'').localeCompare(b.collection_date||''); });
-    var body = mine.map(function(c){
+  // ---------------- Sales register: ONE table, split by building then type, with the collection actions on each row ----------------
+  function collState(value, got){ return got<=0.005 ? 'none' : (value-got<=0.005 ? 'full' : 'part'); }
+  function collChip(state){ return '<span class="st-chip st-'+state+'">'+({full:'مسدد بالكامل', part:'تحصيل جزئي', none:'لم يُحصَّل'})[state]+'</span>'; }
+  function pbarHtml(pct){ return '<div class="pbar"><i style="width:'+Math.max(0,Math.min(100,pct)).toFixed(1)+'%"></i></div>'; }
+
+  // numbers about one sale and its customer, straight from what is already loaded (used by the collection dialog and the quick form)
+  function saleCollectionInfo(saleId){
+    var pid = uiState.invProjectId, sales = cache.inventorySales[pid]||[], colls = cache.inventoryCollections[pid]||[];
+    var got = {}; colls.forEach(function(x){ got[x.sale_id] = (got[x.sale_id]||0) + Number(x.amount); });
+    var s = sales.find(function(x){ return x.id===Number(saleId); }); if(!s) return null;
+    var value = Number(s.sale_amount)||0, g = got[s.id]||0, name = (s.customer_name||'').trim();
+    var custRem = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }).reduce(function(t,x){ return t + (Number(x.sale_amount)||0) - (got[x.id]||0); }, 0) : value-g;
+    var custUnits = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }).length : 1;
+    return { s:s, value:value, got:g, rem:value-g, name:name, custRem:custRem, custUnits:custUnits };
+  }
+  async function recordCollection(info, amount, date, note){
+    await api('POST','/inventory/collections',{saleId:info.s.id, amount:amount, date:date, description:note||null});
+    var rem = info.rem - amount, custRem = info.custRem - amount;
+    alert('تم تسجيل تحصيل '+money(amount)+' على «'+info.s.item_name+'»'+(info.name?(' — العميل: '+info.name):'')+
+      '\nالمتبقي على الوحدة: '+money(rem)+(info.custUnits>1?('\nإجمالي المتبقي على العميل ('+info.custUnits+' وحدات): '+money(custRem)):'')+
+      '\nواتحدّث تلقائي في حسابات العملاء.');
+    invalidateAndReload();
+  }
+  function openCollectionDialog(saleId){
+    var info = saleCollectionInfo(saleId); if(!info) return;
+    openEditDialog({
+      title: 'تسجيل تحصيل — '+info.s.item_name,
+      note: (info.name?('العميل: <b>'+escapeHtml(info.name)+'</b><br>'):'')+'قيمة الوحدة: <b>'+money(info.value)+'</b> | المحصل: <b>'+money(info.got)+'</b> | المتبقي: <b>'+money(info.rem)+'</b>',
+      saveLabel: 'تسجيل التحصيل',
+      fields: [{key:'amount', label:'مبلغ التحصيل', type:'number', step:'0.01', value: info.rem>0.005 ? info.rem.toFixed(2) : ''},
+               {key:'date', label:'تاريخ التحصيل', type:'date', value: todayStr()},
+               {key:'note', label:'ملاحظات (اختياري)', value:''}],
+      onSave: async function(v){
+        var amount = needAmount(v.amount), date = needDate(v.date);
+        if(amount > info.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي على الوحدة ('+money(info.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) throw new Error('اتلغى التسجيل');
+        await recordCollection(info, amount, date, v.note.trim());
+      }
+    });
+  }
+
+  function saleDetailRow(r, allCollections){
+    var s = r.s;
+    var mine = allCollections.filter(function(x){ return x.sale_id===s.id; }).sort(function(a,b){ return String(a.collection_date||'').localeCompare(String(b.collection_date||'')); });
+    var body = mine.map(function(x){
       return '<tr>'+
-        '<td><input type="date" class="coll-edit-date" data-coll="'+c.id+'" value="'+String(c.collection_date).slice(0,10)+'" style="width:150px;"></td>'+
-        '<td><input type="number" class="coll-edit-amount" data-coll="'+c.id+'" value="'+c.amount+'" min="0" step="0.01" style="width:130px;"></td>'+
-        '<td><input type="text" class="coll-edit-desc" data-coll="'+c.id+'" value="'+escapeHtml(c.description||'')+'" style="width:180px;"></td>'+
-        '<td><button class="btn ghost sm" data-save-collection="'+c.id+'">حفظ</button></td>'+
-        '<td><button class="del-x" data-del-collection="'+c.id+'">✕</button></td></tr>';
+        '<td><input type="date" class="coll-edit-date" data-coll="'+x.id+'" value="'+String(x.collection_date).slice(0,10)+'" style="width:150px;"></td>'+
+        '<td><input type="number" class="coll-edit-amount" data-coll="'+x.id+'" value="'+x.amount+'" min="0" step="0.01" style="width:130px;"></td>'+
+        '<td><input type="text" class="coll-edit-desc" data-coll="'+x.id+'" value="'+escapeHtml(x.description||'')+'" style="width:170px;"></td>'+
+        '<td><button class="btn ghost sm" data-save-collection="'+x.id+'">حفظ</button></td>'+
+        '<td><button class="del-x" data-del-collection="'+x.id+'">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="5" class="empty">لا توجد تحصيلات مسجلة لهذا العقد بعد</td></tr>';
-    return '<tr id="'+rowId+'" class="ledger-detail-row" style="display:none;"><td colspan="21" style="padding:10px 14px;background:#faf7ea;">'+
-      '<table style="width:auto;min-width:600px;"><thead><tr><th>التاريخ</th><th>المبلغ</th><th>ملاحظات</th><th></th><th></th></tr></thead><tbody>'+body+'</tbody></table>'+
+    var dues = (Number(s.sale_amount)||0) + (Number(s.garage_value)||0) + (Number(s.maintenance_value)||0) + (Number(s.utilities_value)||0);
+    var kv = [['قيمة الوحدة', money(s.sale_amount)], ['نسبة المقدم', s.down_payment_percent!=null ? s.down_payment_percent+'%' : '—'],
+      ['الجراج (قيمة / محصل)', money(s.garage_value)+' / '+money(s.garage_collected)], ['دفعة الصيانة (قيمة / محصل)', money(s.maintenance_value)+' / '+money(s.maintenance_collected)],
+      ['المرافق + الصحي (قيمة / محصل)', money(s.utilities_value)+' / '+money(s.utilities_collected)], ['إجمالي المستحقات', money(dues)],
+      ['فروق تحصيل', money(s.collection_diff)], ['مساحة الوحدة', s.item_net_area!=null ? s.item_net_area : '—'], ['مساحة الجاردن', s.item_garden_area!=null ? s.item_garden_area : '—'],
+      ['ملاحظات', escapeHtml(s.description||'—')]];
+    return '<tr id="coll-detail-'+s.id+'" class="ledger-detail-row" data-bld="'+escapeHtml(r.building)+'" style="display:none;"><td colspan="9" style="padding:14px 16px;background:#faf7ea;">'+
+      '<div class="det-grid"><div><div style="font-weight:800;margin-bottom:8px;">التحصيلات المسجلة</div>'+
+        '<table style="width:100%;"><thead><tr><th>التاريخ</th><th>المبلغ</th><th>ملاحظات</th><th></th><th></th></tr></thead><tbody>'+body+'</tbody></table>'+
+        '<button class="btn sm" data-add-coll="'+s.id+'" type="button" style="margin-top:10px;">＋ إضافة تحصيل</button></div>'+
+      '<div><div style="font-weight:800;margin-bottom:8px;">تفاصيل العقد</div><div class="det-kv">'+kv.map(function(p){ return '<span>'+p[0]+'</span><span class="mono">'+p[1]+'</span>'; }).join('')+'</div></div></div>'+
     '</td></tr>';
+  }
+
+  function salesKpiHtml(sales, collectedBySale){
+    var value = 0, got = 0; sales.forEach(function(s){ value += Number(s.sale_amount)||0; got += collectedBySale[s.id]||0; });
+    var rem = value - got, pct = value>0 ? got/value*100 : 0;
+    return '<div class="grid-stats" style="margin-bottom:10px;">'+
+      '<div class="stat"><div class="label">عدد الوحدات المباعة</div><div class="val teal">'+sales.length+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val">'+money(value)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصل من العملاء</div><div class="val credit">'+money(got)+'</div></div>'+
+      '<div class="stat"><div class="label">المتبقي لدى العملاء</div><div class="val '+(rem>0.001?'debit':'credit')+'">'+money(rem)+'</div></div></div>'+
+      '<div style="margin:0 0 22px;"><div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);"><span>نسبة التحصيل الكلية</span><b>'+pct.toFixed(1)+'%</b></div>'+pbarHtml(pct)+'</div>';
+  }
+
+  function quickCollectionPanelHtml(pOptions){
+    var fld = function(l, inner){ return '<div class="field" style="margin:0;"><label>'+l+'</label>'+inner+'</div>'; };
+    return '<div class="panel"><div class="panel-head"><h3>إضافة تحصيل على عميل</h3></div><div class="panel-body">'+
+      '<form id="qc-form"><div class="qc-grid">'+
+        fld('المشروع','<select id="qc-project">'+pOptions+'</select>')+
+        fld('رقم العمارة','<select id="qc-building"></select>')+
+        fld('الوحدة / العميل','<select id="qc-sale"></select>')+
+        fld('مبلغ التحصيل','<input type="number" id="qc-amount" min="0" step="0.01" required>')+
+        fld('تاريخ التحصيل','<input type="date" id="qc-date" value="'+todayStr()+'" required>')+
+        fld('ملاحظات (اختياري)','<input type="text" id="qc-note">')+
+      '</div><div class="qc-info" id="qc-info"></div><button class="btn" type="submit" id="qc-submit">تسجيل التحصيل</button></form>'+
+    '</div></div>';
+  }
+  function bindQuickCollection(){
+    var form = document.getElementById('qc-form'); if(!form) return;
+    var pid = uiState.invProjectId, sales = cache.inventorySales[pid]||[];
+    var bSel = document.getElementById('qc-building'), sSel = document.getElementById('qc-sale'), amt = document.getElementById('qc-amount'), info = document.getElementById('qc-info'), submit = document.getElementById('qc-submit');
+    var bOf = function(s){ return (s.item_building||s.building_no||'').trim() || 'بدون عمارة'; };
+    var qp = document.getElementById('qc-project');
+    qp.addEventListener('change', function(){ uiState.invProjectId = Number(qp.value); uiState.editingSaleId=null; loadAdminPage(); });
+    if(!sales.length){
+      [bSel, sSel, amt, document.getElementById('qc-date'), document.getElementById('qc-note'), submit].forEach(function(e){ e.disabled = true; });
+      info.textContent = 'لا توجد مبيعات في المشروع ده لسه. اختاري مشروع تاني من القايمة أو سجّلي بيع الأول.'; return;
+    }
+    var buildings = distinctSorted(sales.map(bOf));
+    bSel.innerHTML = buildings.map(function(b){ return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>'; }).join('');
+    if(uiState.qcBuilding && buildings.indexOf(uiState.qcBuilding)>=0) bSel.value = uiState.qcBuilding;
+    function showInfo(){
+      var i = sSel.value ? saleCollectionInfo(sSel.value) : null;
+      if(!i){ info.textContent = ''; amt.value = ''; return; }
+      info.innerHTML = 'العميل: <b>'+escapeHtml(i.name||'بدون اسم')+'</b> &nbsp;|&nbsp; الوحدة: <b>'+escapeHtml(i.s.item_name)+'</b><br>'+
+        'قيمة الوحدة: <b>'+money(i.value)+'</b> &nbsp;|&nbsp; المحصل: <b>'+money(i.got)+'</b> &nbsp;|&nbsp; المتبقي: <b style="color:'+(i.rem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.rem)+'</b>'+
+        (i.custUnits>1 ? '<br>العميل عنده <b>'+i.custUnits+'</b> وحدات، إجمالي المتبقي عليه: <b>'+money(i.custRem)+'</b>' : '');
+      amt.value = i.rem>0.005 ? i.rem.toFixed(2) : '';
+    }
+    function fillSales(){
+      uiState.qcBuilding = bSel.value;
+      var list = sales.filter(function(s){ return bOf(s)===bSel.value; }).sort(function(a,b){ return natCmpAr(a.item_name, b.item_name); });
+      sSel.innerHTML = list.map(function(s){ var i = saleCollectionInfo(s.id);
+        return '<option value="'+s.id+'">'+escapeHtml(s.item_name)+' — '+escapeHtml(i.name||'بدون اسم')+' — متبقي '+money(i.rem)+'</option>'; }).join('');
+      showInfo();
+    }
+    bSel.addEventListener('change', fillSales); sSel.addEventListener('change', showInfo); fillSales();
+    form.addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var i = saleCollectionInfo(sSel.value); if(!i){ alert('اختاري الوحدة'); return; }
+      var amount = parseFloat(amt.value), date = document.getElementById('qc-date').value;
+      if(!isFinite(amount) || amount===0){ alert('اكتبي مبلغ التحصيل'); return; }
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date||'')){ alert('اختاري تاريخ صحيح'); return; }
+      if(amount > i.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي على الوحدة ('+money(i.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) return;
+      submit.disabled = true;
+      try{ await recordCollection(i, amount, date, document.getElementById('qc-note').value.trim()); }
+      catch(e){ alert(e.message); submit.disabled = false; }
+    });
+  }
+
+  function salesRegisterHtml(sales, collections, collectedBySale){
+    if(!sales.length) return '<div class="panel"><div class="empty">لا توجد مبيعات مسجلة بعد. سجّلي أول عملية من «تسجيل بيع جديد».</div></div>';
+    var sf = uiState.sf;
+    var all = sales.map(function(s){
+      var value = Number(s.sale_amount)||0, got = collectedBySale[s.id]||0;
+      return { s:s, id:s.id, building:(s.item_building||s.building_no||'').trim()||'بدون عمارة', type:(s.item_unit||'').trim()||'غير محدد',
+        unit:s.item_name, customer:(s.customer_name||'').trim()||'—', date:String(s.sale_date).slice(0,10), value:value, got:got, rem:value-got,
+        pct: value>0 ? got/value*100 : 0, state: collState(value, got) };
+    });
+    var q = (sf.q||'').trim().toLowerCase();
+    var rows = all.filter(function(r){
+      if(sf.b && r.building!==sf.b) return false;
+      if(sf.t && r.type!==sf.t) return false;
+      if(sf.st && r.state!==sf.st) return false;
+      if(sf.from && r.date < sf.from) return false;
+      if(sf.to && r.date > sf.to) return false;
+      if(q && (r.unit+' '+r.customer).toLowerCase().indexOf(q)<0) return false;
+      return true;
+    });
+    var tot = function(list){ return list.reduce(function(t,r){ return {n:t.n+1, value:t.value+r.value, got:t.got+r.got, rem:t.rem+r.rem}; }, {n:0,value:0,got:0,rem:0}); };
+    var group = function(list, key){ var o = {}; list.forEach(function(r){ (o[r[key]] = o[r[key]] || []).push(r); }); return o; };
+    var chips = function(t){ return '<span class="chipline">'+t.n+' وحدة · بيع '+money(t.value)+' · محصل '+money(t.got)+' · متبقي '+money(t.rem)+'</span>'; };
+    var realB = function(r){ return (r.s.item_building||r.s.building_no||'').trim(); }, realT = function(r){ return (r.s.item_unit||'').trim(); };
+    var body = '', byB = group(rows,'building');
+    Object.keys(byB).sort(natCmpAr).forEach(function(b){
+      var bl = byB[b], eb = escapeHtml(b);
+      body += '<tr class="bld-head" data-bld-toggle="'+eb+'" data-bld="'+eb+'"><td><input type="checkbox" class="group-select" data-sel-b="'+escapeHtml(realB(bl[0]))+'"></td>'+
+        '<td colspan="8"><span class="caret">▾</span>العمارة: '+eb+chips(tot(bl))+'</td></tr>';
+      var byT = group(bl,'type');
+      Object.keys(byT).sort(natCmpAr).forEach(function(t){
+        var tl = byT[t];
+        body += '<tr class="typ-head" data-bld="'+eb+'"><td><input type="checkbox" class="group-select" data-sel-b="'+escapeHtml(realB(tl[0]))+'" data-sel-t="'+escapeHtml(realT(tl[0]))+'"></td>'+
+          '<td colspan="8" style="padding-right:30px;">النوع: '+escapeHtml(t)+chips(tot(tl))+'</td></tr>';
+        tl.slice().sort(function(x,y){ return natCmpAr(x.unit, y.unit); }).forEach(function(r){
+          body += '<tr class="sale-row item-row" data-bld="'+eb+'" data-gb="'+escapeHtml(realB(r))+'" data-gt="'+escapeHtml(realT(r))+'">'+selectColCell('inv-sales', r.id)+
+            '<td style="padding-right:34px;font-weight:700;">'+escapeHtml(r.unit)+'</td><td>'+escapeHtml(r.customer)+'</td><td>'+fmtDate(r.date)+'</td>'+
+            '<td class="amt">'+money(r.value)+'</td><td class="amt credit">'+money(r.got)+'</td>'+
+            '<td style="min-width:130px;">'+collChip(r.state)+' <span class="mono" style="font-size:12px;">'+r.pct.toFixed(0)+'%</span>'+pbarHtml(r.pct)+'</td>'+
+            '<td class="amt '+(r.rem>0.001?'debit':'')+'">'+money(r.rem)+'</td>'+
+            '<td class="act-col"><button class="btn sm" data-add-coll="'+r.id+'" type="button">＋ تحصيل</button> '+
+              '<button class="btn ghost sm" data-view-collections="'+r.id+'" type="button">تفاصيل</button> '+
+              '<button class="edit-x" data-edit-sale="'+r.id+'" title="تعديل العقد">✎</button><button class="del-x" data-del-sale="'+r.id+'" title="حذف العملية">✕</button></td></tr>'+
+            saleDetailRow(r, collections);
+        });
+      });
+    });
+    if(!rows.length) body = '<tr><td colspan="9" class="empty">لا توجد مبيعات تطابق الفلتر المختار</td></tr>';
+    var T = tot(rows), pctAll = T.value>0 ? T.got/T.value*100 : 0;
+    var byTypeAll = group(rows,'type');
+    var typeRows = Object.keys(byTypeAll).sort(natCmpAr).map(function(t){ var x = tot(byTypeAll[t]), p = x.value>0 ? x.got/x.value*100 : 0;
+      return '<tr><td style="font-weight:700;">'+escapeHtml(t)+'</td><td class="mono">'+x.n+'</td><td class="amt">'+money(x.value)+'</td><td class="amt credit">'+money(x.got)+'</td><td class="amt '+(x.rem>0.001?'debit':'')+'">'+money(x.rem)+'</td><td style="min-width:120px;"><span class="mono" style="font-size:12px;">'+p.toFixed(0)+'%</span>'+pbarHtml(p)+'</td></tr>'; }).join('');
+    var opt = function(list, cur, allLabel){ return '<option value="">'+allLabel+'</option>'+list.map(function(v){ return '<option value="'+escapeHtml(v)+'"'+(cur===v?' selected':'')+'>'+escapeHtml(v)+'</option>'; }).join(''); };
+    var fld = function(l, inner, w){ return '<div class="field" style="min-width:'+(w||140)+'px;margin:0;"><label>'+l+'</label>'+inner+'</div>'; };
+    var active = !!(sf.b||sf.t||sf.st||sf.q||sf.from||sf.to);
+    return '<div class="panel"><div class="panel-head"><h3>تقرير المبيعات — مقسّم بالعمارة والنوع</h3></div><div class="panel-body">'+
+      '<div class="filter-bar" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">'+
+        fld('العمارة','<select data-sf="b">'+opt(distinctSorted(all.map(function(r){return r.building;})), sf.b, 'كل العمارات')+'</select>')+
+        fld('النوع','<select data-sf="t">'+opt(distinctSorted(all.map(function(r){return r.type;})), sf.t, 'كل الأنواع')+'</select>')+
+        fld('حالة التحصيل','<select data-sf="st">'+[['','الكل'],['none','لم يُحصَّل'],['part','تحصيل جزئي'],['full','مسدد بالكامل']].map(function(o){ return '<option value="'+o[0]+'"'+(sf.st===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>')+
+        fld('من تاريخ التعاقد','<input type="date" data-sf="from" value="'+sf.from+'">')+
+        fld('إلى تاريخ','<input type="date" data-sf="to" value="'+sf.to+'">')+
+        fld('بحث (وحدة / عميل)','<input type="text" data-sf="q" value="'+escapeHtml(sf.q||'')+'" placeholder="اكتبي واضغطي Enter">',170)+
+        '<button class="btn ghost sm" type="button" data-sf-clear="1" style="margin-bottom:2px;">مسح الفلتر</button></div>'+
+      '<div class="muted-note" style="margin-bottom:8px;">المعروض: <b>'+rows.length+'</b> من '+all.length+' عملية'+(active?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':'')+
+        ' — اضغطي على اسم العمارة لطي القسم أو فتحه. «＋ تحصيل» بيسجل تحصيل على العميل مباشرة، و«تفاصيل» بتفتح التحصيلات وبيانات العقد.</div>'+
+      '<div>'+bulkDeleteBtnHtml('inv-sales', '/inventory/sales/bulk-date')+'</div>'+
+      '<div class="reg-wrap"><table class="reg-table"><thead><tr>'+selectColHeader('inv-sales')+'<th>الوحدة</th><th>العميل</th><th>تاريخ التعاقد</th><th>سعر البيع</th><th>المحصل</th><th>حالة التحصيل</th><th>المتبقي</th><th class="act-col"></th></tr></thead><tbody>'+body+
+        '<tr class="reg-grand"><td></td><td colspan="3">الإجمالي ('+T.n+' وحدة)</td><td class="amt">'+money(T.value)+'</td><td class="amt">'+money(T.got)+'</td><td>'+pctAll.toFixed(1)+'%</td><td class="amt">'+money(T.rem)+'</td><td class="act-col"></td></tr></tbody></table></div>'+
+      '<h3 style="margin:22px 0 10px;font-size:15px;color:var(--teal-deep);">الإجمالي حسب النوع</h3>'+
+      '<div class="reg-wrap" style="max-height:none;"><table class="reg-table"><thead><tr><th>النوع</th><th>عدد الوحدات</th><th>سعر البيع</th><th>المحصل</th><th>المتبقي</th><th>نسبة التحصيل</th></tr></thead><tbody>'+typeRows+'</tbody></table></div>'+
+    '</div></div>';
   }
 
   var natCmpAr = function(a,b){ return String(a).localeCompare(String(b),'ar',{numeric:true}); };
@@ -2185,43 +2405,7 @@
     }
     var itemOptions = itemOptionsForBuilding(selectedBuilding);
 
-    var totalSold=0, totalCollected=0;
-    var natCmp = function(a,b){ return String(a).localeCompare(String(b),'ar',{numeric:true}); };
-    var salesOrdered = sales.slice().sort(function(a,b){
-      return natCmp(a.item_building||a.building_no||'\uFFFF', b.item_building||b.building_no||'\uFFFF')
-          || natCmp(a.item_unit||'\uFFFF', b.item_unit||'\uFFFF')
-          || natCmp(a.item_name, b.item_name);
-    });
-    var saleRows = salesOrdered.map(function(s){
-      var collected = collectedBySale[s.id]||0; // المحصل من العميل (dated sub-ledger)
-      var remaining = Number(s.sale_amount) - collected;
-      var totalDues = Number(s.sale_amount) + Number(s.garage_value||0) + Number(s.maintenance_value||0) + Number(s.utilities_value||0);
-      totalSold += Number(s.sale_amount); totalCollected += collected;
-      return '<tr>'+selectColCell('inv-sales', s.id)+
-        '<td>'+escapeHtml(s.building_no||'—')+'</td>'+
-        '<td>'+escapeHtml(s.item_name)+'</td>'+
-        '<td>'+fmtDate(s.sale_date)+'</td>'+
-        '<td>'+escapeHtml(s.customer_name||'—')+'</td>'+
-        '<td class="amt">'+money(s.sale_amount)+'</td>'+
-        '<td class="amt credit">'+money(collected)+' <button class="btn ghost sm" data-view-collections="'+s.id+'" style="margin-right:4px;">تفاصيل</button></td>'+
-        '<td class="amt '+(remaining>0.001?'debit remaining-pos':'remaining-zero')+'">'+money(remaining)+'</td>'+
-        '<td class="amt">'+money(s.garage_value)+'</td>'+
-        '<td class="amt credit">'+money(s.garage_collected)+'</td>'+
-        '<td class="amt">'+money(s.maintenance_value)+'</td>'+
-        '<td class="amt credit">'+money(s.maintenance_collected)+'</td>'+
-        '<td class="amt">'+money(s.utilities_value)+'</td>'+
-        '<td class="amt credit">'+money(s.utilities_collected)+'</td>'+
-        '<td class="amt teal">'+money(totalDues)+'</td>'+
-        '<td class="amt">'+money(s.collection_diff)+'</td>'+
-        '<td class="mono">'+(s.down_payment_percent!=null?s.down_payment_percent+'%':'—')+'</td>'+
-        '<td class="mono">'+(s.item_net_area!=null?s.item_net_area:'—')+'</td>'+
-        '<td class="mono">'+(s.item_garden_area!=null?s.item_garden_area:'—')+'</td>'+
-        '<td><button class="btn ghost sm" data-collect-sale="'+s.id+'" data-remaining="'+(Number(s.sale_amount)-collected).toFixed(2)+'">تحصيل</button></td>'+
-        '<td><button class="btn ghost sm" data-edit-sale="'+s.id+'">تعديل</button></td>'+
-        '<td><button class="del-x" data-del-sale="'+s.id+'">✕</button></td></tr>'+
-        saleCollectionsDetailRow(s.id, collections);
-    }).join('') || '<tr><td colspan="21" class="empty">لا توجد مبيعات مسجلة بعد</td></tr>';
-    var totalRemaining = totalSold - totalCollected;
+
 
     var period = uiState.invCollectionPeriod;
     var periods = [{k:'day',l:'يومي'},{k:'week',l:'أسبوعي'},{k:'month',l:'شهري'},{k:'year',l:'سنوي'}];
@@ -2286,25 +2470,7 @@
       '</div>'+
       '<button class="btn" type="submit" style="margin-top:10px;">إضافة الصنف</button></form>'+
     '</div></div>';
-    var pSalesStats = '<div class="grid-stats">'+
-      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val teal">'+money(totalSold)+'</div></div>'+
-      '<div class="stat"><div class="label">المحصّل من المبيعات</div><div class="val credit">'+money(totalCollected)+'</div></div>'+
-      '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemaining>0.001?'debit':'credit')+'">'+money(totalRemaining)+'</div></div>'+
-    '</div>';
-    var pSalesTable = '<div class="panel"><div class="panel-head"><h3>المبيعات والتحصيلات</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('inv-sales', '/inventory/sales/bulk-date')+'</div>'+
-      '<table><thead><tr>'+selectColHeader('inv-sales')+
-        '<th>رقم العمارة</th><th>رقم الوحدة</th><th>تاريخ التعاقد</th><th>اسم العميل</th>'+
-        '<th>قيمة الوحدة</th><th>المحصل من العميل</th><th>المتبقي لدى العميل</th>'+
-        '<th>الجراج</th><th>المحصل من الجراج</th>'+
-        '<th>دفعة الصيانة</th><th>المحصل من دفعة الصيانة</th>'+
-        '<th>المرافق + الصحي</th><th>المحصل من المرافق</th>'+
-        '<th>اجمالي المستحقات</th><th>فروق تحصيل</th><th>نسبة المقدم</th>'+
-        '<th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th><th></th>'+
-      '</tr></thead><tbody>'+saleRows+'</tbody></table>'+
-    '</div></div>';
-    var pSalesReports = salesGroupedReportHtml(sales, collectedBySale)+
-    priceMismatchHtml(sales);
+    var pMismatch = priceMismatchHtml(sales);
     var pInvReport = inventoryGroupedReportHtml(items, sales);
     var pSaleForm = '<div class="panel"><div class="panel-head"><h3>'+(uiState.editingSaleId?'تعديل بيانات عقد البيع':'تسجيل عملية بيع جديدة')+'</h3></div><div class="panel-body">'+
       (items.length===0 ? '<div class="empty">أضف صنفًا للمخزون أولاً.</div>' :
@@ -2373,7 +2539,13 @@
     // the same data feeds two pages, so each one is short and focused on its own data entry
     var pHeadInv = '<div class="page-head"><h2>المخزون</h2><p>أصناف المشروع بأنواعها وحالاتها وأسعارها وما اتباع منها. سجّلي وعدّلي واستوردي الأصناف من هنا. المبيعات والتحصيل في صفحة «المبيعات والتحصيل».</p></div>';
     var pHeadSales = '<div class="page-head"><h2>المبيعات والتحصيل</h2><p>سجّلي عمليات البيع والتحصيلات، وتابعي المتبقي على كل عميل. الأصناف نفسها في صفحة «المخزون».</p></div>';
-    if(mode==='sales') return pHeadSales + pProj + pSaleForm + pSalesStats + pSalesTable + pSalesReports + pCust + pPeriods + pExpense + pImportSales;
+    if(mode==='sales'){
+      var entryTab = uiState.editingSaleId ? 'sale' : uiState.salesEntryTab;
+      var seg = '<div class="seg"><button type="button" data-etab="collection" class="'+(entryTab==='collection'?'active':'')+'">＋ إضافة تحصيل</button>'+
+        '<button type="button" data-etab="sale" class="'+(entryTab==='sale'?'active':'')+'">＋ '+(uiState.editingSaleId?'تعديل عقد البيع':'تسجيل بيع جديد')+'</button></div>';
+      return pHeadSales + pProj + salesKpiHtml(sales, collectedBySale) + seg + (entryTab==='sale' ? pSaleForm : quickCollectionPanelHtml(pOptions)) +
+        salesRegisterHtml(sales, collections, collectedBySale) + pCust + pPeriods + pMismatch + pExpense + pImportSales;
+    }
     return pHeadInv + pProj + pInvForm + pInvTable + pInvReport + pImportInv;
   }
 
@@ -3208,40 +3380,53 @@
     });
     document.querySelectorAll('[data-edit-sale]').forEach(function(btn){
       btn.addEventListener('click', function(){
-        uiState.editingSaleId = Number(btn.getAttribute('data-edit-sale'));
+        uiState.editingSaleId = Number(btn.getAttribute('data-edit-sale')); uiState.salesEntryTab = 'sale';
         renderAdminMain();
         var panel = document.getElementById('add-sale-form');
         if(panel) panel.scrollIntoView({behavior:'smooth', block:'center'});
       });
     });
     var cancelEditBtn = document.getElementById('cancel-edit-sale');
-    if(cancelEditBtn) cancelEditBtn.addEventListener('click', function(){ uiState.editingSaleId=null; renderAdminMain(); });
+    if(cancelEditBtn) cancelEditBtn.addEventListener('click', function(){ uiState.editingSaleId=null; uiState.salesEntryTab='collection'; renderAdminMain(); });
     document.querySelectorAll('[data-del-sale]').forEach(function(btn){
       btn.addEventListener('click', async function(){
+        if(!confirm('حذف عملية البيع دي؟ التحصيلات المسجلة عليها هتتحذف معاها، والوحدة هترجع متاحة.')) return;
         try{ await api('DELETE','/inventory/sales/'+btn.getAttribute('data-del-sale')); invalidateAndReload(); } catch(e){ alert(e.message); }
       });
     });
-    document.querySelectorAll('[data-collect-sale]').forEach(function(btn){
-      btn.addEventListener('click', async function(){
-        var saleId = btn.getAttribute('data-collect-sale');
-        var maxRemaining = btn.getAttribute('data-remaining');
-        var amountStr = prompt('مبلغ التحصيل من العميل (المتبقي من قيمة الوحدة: '+maxRemaining+')', maxRemaining);
-        if(amountStr===null) return;
-        var amount = parseFloat(amountStr);
-        if(!amount || amount<=0){ alert('مبلغ غير صحيح'); return; }
-        var dateStr = prompt('تاريخ التحصيل (YYYY-MM-DD)', todayStr());
-        if(dateStr===null) return;
-        try{ await api('POST','/inventory/collections',{saleId:Number(saleId), amount:amount, date:dateStr}); invalidateAndReload(); }
-        catch(e){ alert(e.message); }
+    document.querySelectorAll('[data-collect-sale], [data-add-coll]').forEach(function(btn){
+      btn.addEventListener('click', function(){ openCollectionDialog(Number(btn.getAttribute('data-collect-sale') || btn.getAttribute('data-add-coll'))); });
+    });
+    document.querySelectorAll('[data-etab]').forEach(function(t){
+      t.addEventListener('click', function(){ uiState.salesEntryTab = t.getAttribute('data-etab'); if(uiState.salesEntryTab==='collection') uiState.editingSaleId = null; renderAdminMain(); });
+    });
+    document.querySelectorAll('[data-sf]').forEach(function(el){
+      el.addEventListener('change', function(){ uiState.sf[el.getAttribute('data-sf')] = el.value; renderAdminMain(); });
+    });
+    document.querySelectorAll('[data-sf-clear]').forEach(function(b){
+      b.addEventListener('click', function(){ uiState.sf = {b:'',t:'',st:'',q:'',from:'',to:''}; renderAdminMain(); });
+    });
+    // click a building header to fold / unfold its section
+    document.querySelectorAll('tr[data-bld-toggle]').forEach(function(h){
+      h.addEventListener('click', function(ev){
+        if(ev.target.closest && ev.target.closest('input,button')) return;
+        var b = h.getAttribute('data-bld-toggle'), collapsed = h.classList.toggle('collapsed');
+        var caret = h.querySelector('.caret'); if(caret) caret.textContent = collapsed ? '◂' : '▾';
+        document.querySelectorAll('tr[data-bld]').forEach(function(r){
+          if(r===h || r.getAttribute('data-bld')!==b) return;
+          if(collapsed){ r.style.display = 'none'; r.setAttribute('data-folded','1'); }
+          else if(r.getAttribute('data-folded')==='1'){ r.removeAttribute('data-folded'); if(!r.classList.contains('ledger-detail-row') || r.getAttribute('data-open')==='1') r.style.display = ''; }
+        });
       });
     });
+    bindQuickCollection();
     document.querySelectorAll('[data-collection-period]').forEach(function(chip){
       chip.addEventListener('click', function(){ uiState.invCollectionPeriod = chip.getAttribute('data-collection-period'); loadAdminPage(); });
     });
     document.querySelectorAll('[data-view-collections]').forEach(function(btn){
       btn.addEventListener('click', function(){
         var row = document.getElementById('coll-detail-'+btn.getAttribute('data-view-collections'));
-        if(row) row.style.display = (row.style.display==='none') ? '' : 'none';
+        if(row){ var show = row.style.display==='none'; row.style.display = show ? '' : 'none'; if(show) row.setAttribute('data-open','1'); else row.removeAttribute('data-open'); }
       });
     });
     document.querySelectorAll('[data-save-collection]').forEach(function(btn){

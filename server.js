@@ -1576,6 +1576,9 @@ app.get('/api/inventory/collections', auth, async (req, res) => {
 app.post('/api/inventory/collections', auth, requireAdmin, async (req, res) => {
   const { saleId, amount, date, description } = req.body || {};
   if (!saleId || !amount || !date) return res.status(400).json({ error: 'بيانات ناقصة' });
+  const bad = checkMoneyEdit({ amount, date });
+  if (bad) return res.status(400).json({ error: bad });
+  if (!(await pool.query('SELECT 1 FROM inventory_sales WHERE id=$1', [saleId])).rows.length) return res.status(404).json({ error: 'عملية البيع غير موجودة' });
   const { rows } = await pool.query(
     'INSERT INTO sale_collections (sale_id, amount, collection_date, description) VALUES ($1,$2,$3,$4) RETURNING *',
     [saleId, amount, date, description || null]
