@@ -1920,32 +1920,51 @@
     var value = Number(s.sale_amount)||0, g = got[s.id]||0, name = (s.customer_name||'').trim(), ex = saleExtras(s);
     var mine = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }) : [s];
     var custRem = mine.reduce(function(t,x){ return t + (Number(x.sale_amount)||0) - (got[x.id]||0) + saleExtras(x).rem; }, 0);
-    return { s:s, value:value, got:g, rem:value-g, ex:ex, totalRem:value-g+ex.rem, name:name, custRem:custRem, custUnits:mine.length };
+    var kinds = { unit:{label:'ثمن الوحدة', value:value, got:g}, garage:{label:'الجراج', value:ex.g, got:ex.gc},
+                  maintenance:{label:'وديعة الصيانة', value:ex.m, got:ex.mc}, utilities:{label:'المرافق + الصحي', value:ex.u, got:ex.uc} };
+    Object.keys(kinds).forEach(function(k){ kinds[k].rem = kinds[k].value - kinds[k].got; });
+    return { s:s, value:value, got:g, rem:value-g, ex:ex, kinds:kinds, totalRem:value-g+ex.rem, name:name, custRem:custRem, custUnits:mine.length };
   }
-  async function recordCollection(info, amount, date, note){
-    await api('POST','/inventory/collections',{saleId:info.s.id, amount:amount, date:date, description:note||null});
-    var rem = info.rem - amount, custRem = info.custRem - amount;
-    alert('تم تسجيل تحصيل '+money(amount)+' على «'+info.s.item_name+'»'+(info.name?(' — العميل: '+info.name):'')+
-      '\nالمتبقي على الوحدة: '+money(rem)+(info.ex.rem>0.005?('\nالمتبقي من الجراج/الوديعة: '+money(info.ex.rem)):'')+'\nإجمالي المتبقي على العميل'+(info.custUnits>1?(' ('+info.custUnits+' وحدات)'):'')+': '+money(custRem)+
+  // <option>s for "what is this collection for": unit price / garage / maintenance deposit (/ utilities when the sale has them)
+  function kindOptionsHtml(info, selected){
+    return ['unit','garage','maintenance','utilities'].filter(function(k){ var x = info.kinds[k]; return k==='unit' || Math.abs(x.value)>0.005 || Math.abs(x.got)>0.005; })
+      .map(function(k){ var x = info.kinds[k];
+        return '<option value="'+k+'"'+(k===selected?' selected':'')+'>'+x.label+' — متبقي '+money(x.rem)+'</option>'; }).join('');
+  }
+  async function recordCollection(info, amount, date, note, kind){
+    kind = kind || 'unit';
+    if(kind==='unit') await api('POST','/inventory/collections',{saleId:info.s.id, amount:amount, date:date, description:note||null});
+    else await api('POST','/inventory/sales/'+info.s.id+'/collect-extra',{kind:kind, amount:amount});
+    var label = info.kinds[kind].label, kRem = info.kinds[kind].rem - amount, custRem = info.custRem - amount;
+    alert('تم تسجيل تحصيل '+money(amount)+' ('+label+') على «'+info.s.item_name+'»'+(info.name?(' — العميل: '+info.name):'')+
+      '\nالمتبقي من '+label+': '+money(kRem)+
+      (kind==='unit' && info.ex.rem>0.005 ? ('\nالمتبقي من الجراج/الوديعة: '+money(info.ex.rem)) : '')+
+      '\nإجمالي المتبقي على العميل'+(info.custUnits>1?(' ('+info.custUnits+' وحدات)'):'')+': '+money(custRem)+
+      (kind==='unit' ? '' : '\n(الجراج والوديعة بيتضافوا على إجمالي المحصل في العقد من غير تاريخ)')+
       '\nواتحدّث تلقائي في حسابات العملاء.');
     invalidateAndReload();
   }
   function openCollectionDialog(saleId){
     var info = saleCollectionInfo(saleId); if(!info) return;
-    openEditDialog({
+    var ov = openEditDialog({
       title: 'تسجيل تحصيل — '+info.s.item_name,
-      note: (info.name?('العميل: <b>'+escapeHtml(info.name)+'</b><br>'):'')+'قيمة الوحدة: <b>'+money(info.value)+'</b> | المحصل: <b>'+money(info.got)+'</b> | المتبقي: <b>'+money(info.rem)+'</b>'+
-        (Math.abs(info.ex.g)+Math.abs(info.ex.m)+Math.abs(info.ex.u)>0.005 ? '<br>الجراج: <b>'+money(info.ex.g-info.ex.gc)+'</b> | وديعة الصيانة: <b>'+money(info.ex.m-info.ex.mc)+'</b> متبقي — اتسجلهم من «تعديل العقد»' : '')+
-        '<br>إجمالي المتبقي على العميل: <b>'+money(info.custRem)+'</b>',
+      note: (info.name?('العميل: <b>'+escapeHtml(info.name)+'</b><br>'):'')+'إجمالي المتبقي على العميل: <b>'+money(info.custRem)+'</b>'+(info.custUnits>1?(' ('+info.custUnits+' وحدات)'):''),
       saveLabel: 'تسجيل التحصيل',
-      fields: [{key:'amount', label:'مبلغ التحصيل', type:'number', step:'0.01', value: info.rem>0.005 ? info.rem.toFixed(2) : ''},
-               {key:'date', label:'تاريخ التحصيل', type:'date', value: todayStr()},
-               {key:'note', label:'ملاحظات (اختياري)', value:''}],
+      fields: [{key:'kind', label:'نوع التحصيل', type:'select', optionsHtml:kindOptionsHtml(info,'unit'), value:'unit'},
+               {key:'amount', label:'مبلغ التحصيل', type:'number', step:'0.01', value: info.rem>0.005 ? info.rem.toFixed(2) : ''},
+               {key:'date', label:'تاريخ التحصيل (لثمن الوحدة)', type:'date', value: todayStr()},
+               {key:'note', label:'ملاحظات (لثمن الوحدة)', value:''}],
       onSave: async function(v){
-        var amount = needAmount(v.amount), date = needDate(v.date);
-        if(amount > info.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي على الوحدة ('+money(info.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) throw new Error('اتلغى التسجيل');
-        await recordCollection(info, amount, date, v.note.trim());
+        var kind = v.kind, k = info.kinds[kind], amount = needAmount(v.amount);
+        var date = kind==='unit' ? needDate(v.date) : v.date;
+        if(amount > k.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي من '+k.label+' ('+money(k.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) throw new Error('اتلغى التسجيل');
+        await recordCollection(info, amount, date, v.note.trim(), kind);
       }
+    });
+    var kindSel = ov.querySelector('#ed-f-0'), amountEl = ov.querySelector('#ed-f-1'), dateEl = ov.querySelector('#ed-f-2'), noteEl = ov.querySelector('#ed-f-3');
+    kindSel.addEventListener('change', function(){
+      var k = info.kinds[kindSel.value]; amountEl.value = k.rem>0.005 ? k.rem.toFixed(2) : '';
+      var isUnit = kindSel.value==='unit'; dateEl.disabled = !isUnit; noteEl.disabled = !isUnit;
     });
   }
 
@@ -1997,8 +2016,9 @@
         fld('المشروع','<select id="qc-project">'+pOptions+'</select>')+
         fld('رقم العمارة','<select id="qc-building"></select>')+
         fld('الوحدة / العميل','<select id="qc-sale"></select>')+
+        fld('نوع التحصيل','<select id="qc-kind"></select>')+
         fld('مبلغ التحصيل','<input type="number" id="qc-amount" min="0" step="0.01" required>')+
-        fld('تاريخ التحصيل','<input type="date" id="qc-date" value="'+todayStr()+'" required>')+
+        fld('تاريخ التحصيل (لثمن الوحدة)','<input type="date" id="qc-date" value="'+todayStr()+'" required>')+
         fld('ملاحظات (اختياري)','<input type="text" id="qc-note">')+
       '</div><div class="qc-info" id="qc-info"></div><button class="btn" type="submit" id="qc-submit">تسجيل التحصيل</button></form>'+
     '</div></div>';
@@ -2006,25 +2026,31 @@
   function bindQuickCollection(){
     var form = document.getElementById('qc-form'); if(!form) return;
     var pid = uiState.invProjectId, sales = cache.inventorySales[pid]||[];
-    var bSel = document.getElementById('qc-building'), sSel = document.getElementById('qc-sale'), amt = document.getElementById('qc-amount'), info = document.getElementById('qc-info'), submit = document.getElementById('qc-submit');
+    var kSel = document.getElementById('qc-kind'), bSel = document.getElementById('qc-building'), sSel = document.getElementById('qc-sale'), amt = document.getElementById('qc-amount'), info = document.getElementById('qc-info'), submit = document.getElementById('qc-submit');
     var bOf = function(s){ return (s.item_building||s.building_no||'').trim() || 'بدون عمارة'; };
     var qp = document.getElementById('qc-project');
     qp.addEventListener('change', function(){ uiState.invProjectId = Number(qp.value); uiState.editingSaleId=null; loadAdminPage(); });
     if(!sales.length){
-      [bSel, sSel, amt, document.getElementById('qc-date'), document.getElementById('qc-note'), submit].forEach(function(e){ e.disabled = true; });
+      [bSel, sSel, kSel, amt, document.getElementById('qc-date'), document.getElementById('qc-note'), submit].forEach(function(e){ e.disabled = true; });
       info.textContent = 'لا توجد مبيعات في المشروع ده لسه. اختاري مشروع تاني من القايمة أو سجّلي بيع الأول.'; return;
     }
     var buildings = distinctSorted(sales.map(bOf));
     bSel.innerHTML = buildings.map(function(b){ return '<option value="'+escapeHtml(b)+'">'+escapeHtml(b)+'</option>'; }).join('');
     if(uiState.qcBuilding && buildings.indexOf(uiState.qcBuilding)>=0) bSel.value = uiState.qcBuilding;
+    function applyKind(i){
+      var isUnit = kSel.value==='unit', k = i.kinds[kSel.value] || i.kinds.unit;
+      amt.value = k.rem>0.005 ? k.rem.toFixed(2) : '';
+      document.getElementById('qc-date').disabled = !isUnit; document.getElementById('qc-note').disabled = !isUnit;
+    }
     function showInfo(){
       var i = sSel.value ? saleCollectionInfo(sSel.value) : null;
-      if(!i){ info.textContent = ''; amt.value = ''; return; }
+      if(!i){ info.textContent = ''; amt.value = ''; kSel.innerHTML = ''; return; }
+      var keep = kSel.value; kSel.innerHTML = kindOptionsHtml(i, keep || 'unit'); if(!kSel.value) kSel.value = 'unit';
       info.innerHTML = 'العميل: <b>'+escapeHtml(i.name||'بدون اسم')+'</b> &nbsp;|&nbsp; الوحدة: <b>'+escapeHtml(i.s.item_name)+'</b><br>'+
         'قيمة الوحدة: <b>'+money(i.value)+'</b> &nbsp;|&nbsp; المحصل: <b>'+money(i.got)+'</b> &nbsp;|&nbsp; المتبقي من الوحدة: <b style="color:'+(i.rem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.rem)+'</b>'+
         (Math.abs(i.ex.g)+Math.abs(i.ex.m)+Math.abs(i.ex.u)>0.005 ? '<br>الجراج: <b>'+money(i.ex.g)+'</b> (متبقي '+money(i.ex.g-i.ex.gc)+') &nbsp;|&nbsp; وديعة الصيانة: <b>'+money(i.ex.m)+'</b> (متبقي '+money(i.ex.m-i.ex.mc)+')' : '')+
         '<br>إجمالي المتبقي على العميل'+(i.custUnits>1?' ('+i.custUnits+' وحدات)':'')+': <b style="color:'+(i.custRem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.custRem)+'</b>';
-      amt.value = i.rem>0.005 ? i.rem.toFixed(2) : '';
+      applyKind(i);
     }
     function fillSales(){
       uiState.qcBuilding = bSel.value;
@@ -2033,16 +2059,19 @@
         return '<option value="'+s.id+'">'+escapeHtml(s.item_name)+' — '+escapeHtml(i.name||'بدون اسم')+' — متبقي '+money(i.rem)+'</option>'; }).join('');
       showInfo();
     }
-    bSel.addEventListener('change', fillSales); sSel.addEventListener('change', showInfo); fillSales();
+    bSel.addEventListener('change', function(){ kSel.value = 'unit'; fillSales(); }); sSel.addEventListener('change', function(){ kSel.value = 'unit'; showInfo(); });
+    kSel.addEventListener('change', function(){ var i = saleCollectionInfo(sSel.value); if(i) applyKind(i); });
+    fillSales();
     form.addEventListener('submit', async function(ev){
       ev.preventDefault();
       var i = saleCollectionInfo(sSel.value); if(!i){ alert('اختاري الوحدة'); return; }
+      var kind = kSel.value || 'unit', k = i.kinds[kind];
       var amount = parseFloat(amt.value), date = document.getElementById('qc-date').value;
       if(!isFinite(amount) || amount===0){ alert('اكتبي مبلغ التحصيل'); return; }
-      if(!/^\d{4}-\d{2}-\d{2}$/.test(date||'')){ alert('اختاري تاريخ صحيح'); return; }
-      if(amount > i.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي على الوحدة ('+money(i.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) return;
+      if(kind==='unit' && !/^\d{4}-\d{2}-\d{2}$/.test(date||'')){ alert('اختاري تاريخ صحيح'); return; }
+      if(amount > k.rem + 0.005 && !confirm('المبلغ أكبر من المتبقي من '+k.label+' ('+money(k.rem)+'). هيتسجل برضه والمتبقي هيبقى بالسالب. تكمّل؟')) return;
       submit.disabled = true;
-      try{ await recordCollection(i, amount, date, document.getElementById('qc-note').value.trim()); }
+      try{ await recordCollection(i, amount, date, document.getElementById('qc-note').value.trim(), kind); }
       catch(e){ alert(e.message); submit.disabled = false; }
     });
   }

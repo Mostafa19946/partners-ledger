@@ -1586,6 +1586,21 @@ app.post('/api/inventory/collections', auth, requireAdmin, async (req, res) => {
   res.json(rows[0]);
 });
 
+// Collect on the garage / maintenance deposit / utilities of a sale. These amounts live as a running "collected" figure on
+// the sale itself (the same figure the sale form edits), so this adds to it in ONE statement (no read-modify-write race)
+// and refuses to take it below zero. The unit price keeps its dated collection entries (POST /api/inventory/collections).
+app.post('/api/inventory/sales/:id/collect-extra', auth, requireAdmin, async (req, res) => {
+  const col = ({ garage: 'garage_collected', maintenance: 'maintenance_collected', utilities: 'utilities_collected' })[(req.body || {}).kind];
+  if (!col) return res.status(400).json({ error: 'نوع التحصيل غير صحيح' });
+  const amount = Number((req.body || {}).amount);
+  if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ error: 'المبلغ غير صحيح' });
+  const cur = (await pool.query(`SELECT COALESCE(${col}, 0) AS v FROM inventory_sales WHERE id=$1`, [req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'عملية البيع غير موجودة' });
+  if (Number(cur.v) + amount < -0.005) return res.status(400).json({ error: 'المحصل مش ممكن يبقى بالسالب' });
+  const { rows } = await pool.query(`UPDATE inventory_sales SET ${col} = COALESCE(${col}, 0) + $1 WHERE id=$2 RETURNING *`, [amount, req.params.id]);
+  res.json(rows[0]);
+});
+
 app.put('/api/inventory/collections/:id', auth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const v = (x) => (x === undefined ? null : x);
