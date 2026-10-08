@@ -827,6 +827,49 @@ app.post('/api/companies/:id/assets/record-expenses', auth, requireAdmin, async 
   res.json({ created, alreadyHadExpense: ids.length - created });
 });
 
+// Change the purchase date of many assets at once (one new date, or move each by N days). The "شراء أصول" expense booked
+// for each asset gets the same date, so the register and the expenses never disagree.
+app.post('/api/companies/:id/assets/bulk-date', auth, requireAdmin, async (req, res) => {
+  const { ids, date, shiftDays } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد أصول محددة' });
+  const idList = ids.map(n => parseInt(n, 10)).filter(Boolean);
+  const cid = parseInt(req.params.id, 10);
+  const params = [idList, cid];
+  let setSql;
+  if (date !== undefined && date !== null && date !== '') {
+    if (!isValidISODate(date)) return res.status(400).json({ error: 'التاريخ غير صالح (الصيغة YYYY-MM-DD)' });
+    params.push(date); setSql = 'purchase_date = $3::date';
+  } else if (Number.isInteger(Number(shiftDays)) && Number(shiftDays) !== 0 && Math.abs(Number(shiftDays)) <= 3660) {
+    params.push(Number(shiftDays)); setSql = 'purchase_date = (purchase_date + $3::int)';
+  } else {
+    return res.status(400).json({ error: 'حدد تاريخًا جديدًا أو عدد أيام للإزاحة' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const upd = await client.query(`UPDATE company_assets SET ${setSql} WHERE id = ANY($1::int[]) AND company_id = $2`, params);
+    await client.query(
+      `UPDATE company_expenses e SET entry_date = a.purchase_date
+       FROM company_assets a WHERE e.asset_id = a.id AND a.id = ANY($1::int[]) AND a.company_id = $2`, [idList, cid]);
+    await client.query('COMMIT');
+    res.json({ updated: upd.rowCount });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'تعذر تعديل التواريخ: ' + e.message });
+  } finally { client.release(); }
+});
+
+// Same useful life (in years) for many assets at once; depreciation and book value are worked out from it on the fly.
+app.post('/api/companies/:id/assets/bulk-life', auth, requireAdmin, async (req, res) => {
+  const { ids, years } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد أصول محددة' });
+  const y = Number(years);
+  if (!Number.isFinite(y) || y <= 0 || y > 200) return res.status(400).json({ error: 'العمر الافتراضي لازم يكون عدد سنين أكبر من صفر' });
+  const idList = ids.map(n => parseInt(n, 10)).filter(Boolean);
+  const upd = await pool.query('UPDATE company_assets SET useful_life_years=$1 WHERE id = ANY($2::int[]) AND company_id=$3', [y, idList, req.params.id]);
+  res.json({ updated: upd.rowCount });
+});
+
 // Excel import. Rows that are already in the register (same name + date + cost) are skipped, so importing the same
 // file twice can't duplicate anything. recordExpenses (default true) books each new asset as a "شراء أصول" expense.
 app.post('/api/companies/:id/assets/bulk', auth, requireAdmin, async (req, res) => {

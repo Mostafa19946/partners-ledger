@@ -199,7 +199,7 @@
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
     invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all',
-    assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
+    filters:{}, assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
   var ITEM_STATUSES = ['متاح','محجوز','مباع','مغلق'];
@@ -1124,10 +1124,10 @@
   function needDate(v){ if(!/^\d{4}-\d{2}-\d{2}$/.test(v||'')) throw new Error('اختار تاريخ صحيح'); return v; }
 
   // change the date of every ticked row at once: one new date for all, or move each by N days (+1 / -1)
-  function openBulkDateDialog(count, url, ids){
+  function openBulkDateDialog(count, url, ids, extraNote){
     openEditDialog({
       title: 'تعديل تاريخ '+count+' صف محدد',
-      note: 'املي واحد بس: <b>تاريخ جديد</b> هيتحط على كل الصفوف المحددة، أو <b>عدد أيام</b> بيتحرك بيه تاريخ كل صف (1 = يوم بعد، -1 = يوم قبل). مفيد لو الاستيراد جاب التواريخ بفرق يوم.',
+      note: 'املي واحد بس: <b>تاريخ جديد</b> هيتحط على كل الصفوف المحددة، أو <b>عدد أيام</b> بيتحرك بيه تاريخ كل صف (1 = يوم بعد، -1 = يوم قبل). مفيد لو الاستيراد جاب التواريخ بفرق يوم.'+(extraNote?' '+extraNote:''),
       saveLabel: 'تطبيق',
       fields: [{key:'date', label:'تاريخ جديد لكل المحدد', type:'date', value:''}, {key:'shift', label:'أو: إزاحة بعدد أيام', type:'number', step:'1', value:''}],
       onSave: async function(v){
@@ -1175,6 +1175,24 @@
   function getSelectionSet(key){ if(!selectionSets[key]) selectionSets[key] = new Set(); return selectionSets[key]; }
   function selectColHeader(tableKey){ return '<th style="width:34px;"><input type="checkbox" class="select-all" data-table="'+tableKey+'"></th>'; }
   function selectColCell(tableKey, id){ return '<td><input type="checkbox" class="row-select" data-table="'+tableKey+'" value="'+id+'"></td>'; }
+  // ---- register filters: from / to date, item (category) and an optional extra select ----
+  function getFilter(key){ return uiState.filters[key] || (uiState.filters[key] = {from:'',to:'',cat:'',flag:''}); }
+  function dateInFilter(d, f){ var x = String(d||'').slice(0,10); return !((f.from && x < f.from) || (f.to && x > f.to)); }
+  function distinctSorted(values){ return Array.from(new Set(values.filter(Boolean))).sort(function(a,b){ return String(a).localeCompare(String(b),'ar',{numeric:true}); }); }
+  function filterBarHtml(key, catValues, catLabel, flag){
+    var f = getFilter(key);
+    var catOpts = '<option value="">'+(catLabel==='البند'?'كل البنود':'كل التصنيفات')+'</option>'+catValues.map(function(c){ return '<option value="'+escapeHtml(c)+'"'+(f.cat===c?' selected':'')+'>'+escapeHtml(c)+'</option>'; }).join('');
+    var fld = function(label, inner){ return '<div class="field" style="min-width:150px;margin:0;"><label>'+label+'</label>'+inner+'</div>'; };
+    return '<div class="filter-bar" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:0 18px 10px;">'+
+      fld('من تاريخ', '<input type="date" data-flt="'+key+'" data-f="from" value="'+f.from+'">')+
+      fld('إلى تاريخ', '<input type="date" data-flt="'+key+'" data-f="to" value="'+f.to+'">')+
+      fld(catLabel, '<select data-flt="'+key+'" data-f="cat">'+catOpts+'</select>')+
+      (flag ? fld(flag.label, '<select data-flt="'+key+'" data-f="flag">'+flag.options.map(function(o){ return '<option value="'+o[0]+'"'+(f.flag===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>') : '')+
+      '<button class="btn ghost sm" type="button" data-flt-clear="'+key+'" style="margin-bottom:2px;">مسح الفلتر</button></div>';
+  }
+  function filterActive(key){ var f = uiState.filters[key]; return !!(f && (f.from || f.to || f.cat || f.flag)); }
+  function filterSummary(html){ return '<div class="muted-note" style="margin:0 18px 8px;">'+html+'</div>'; }
+
   function bulkDeleteBtnHtml(tableKey, dateUrl){
     return '<button class="btn danger sm bulk-delete-btn" data-table="'+tableKey+'" type="button" style="display:none;margin-bottom:10px;">حذف المحدد</button>'+
       (dateUrl ? '<button class="btn ghost sm bulk-date-btn" data-table="'+tableKey+'" data-url="'+dateUrl+'" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تعديل تاريخ المحدد</button>' : '');
@@ -1274,7 +1292,11 @@
 
       var rep = cache.companyReports[co.id];
       var tableKey = 'company-exp-'+co.id;
-      var expList = cache.companyExpenses[co.id] || [];
+      var expAll = cache.companyExpenses[co.id] || [];
+      var cf = getFilter(tableKey);
+      var expList = expAll.filter(function(e){ return dateInFilter(e.entry_date, cf) && (!cf.cat || (e.category||'')===cf.cat); });
+      var expCats = distinctSorted(expAll.map(function(e){ return e.category; }));
+      var expShown = expList.reduce(function(t,e){ return t+Number(e.amount); }, 0);
       var expRows = expList.map(function(e){
         return '<tr>'+selectColCell(tableKey, e.id)+
           '<td>'+fmtDate(e.entry_date)+'</td>'+
@@ -1282,7 +1304,7 @@
           '<td>'+escapeHtml(e.description||'—')+'</td>'+
           '<td class="amt debit">'+money(e.amount)+'</td>'+
           '<td>'+coExpActions(co.id, e)+'</td></tr>';
-      }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف عمومية مسجلة بعد</td></tr>';
+      }).join('') || '<tr><td colspan="6" class="empty">'+(expAll.length?'لا توجد مصاريف تطابق الفلتر المختار':'لا توجد مصاريف عمومية مسجلة بعد')+'</td></tr>';
 
       var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
 
@@ -1335,7 +1357,9 @@
 
           '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة (عمومية / إدارية / تسويقية / استثمارية / تمويلية)</h3>'+
           '<div class="muted-note">مصاريف عامة للشركة نفسها، منفصلة تمامًا عن تكاليف كل مشروع (اللي بتتسجل من صفحة "الإيرادات والمصروفات" لكل مشروع على حدة). إجمالي كل المصاريف فوق بيجمع المستويين مع بعض. للاستيراد من إكسيل: صفحة «الإيرادات والمصروفات» ← «الشركة ككل».</div>'+
-          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(tableKey, '/companies/'+co.id+'/expenses/bulk-date')+'</div>'+
+          '<div style="margin:10px -18px 0;">'+filterBarHtml(tableKey, expCats, 'البند')+
+            filterSummary('المعروض: <b>'+expList.length+'</b> من '+expAll.length+' مصروف — الإجمالي: <b>'+money(expShown)+'</b>'+(filterActive(tableKey)?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':''))+'</div>'+
+          '<div style="margin-top:4px;">'+bulkDeleteBtnHtml(tableKey, '/companies/'+co.id+'/expenses/bulk-date')+'</div>'+
           '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+expRows+'</tbody></table></div>'+
           '<form class="add-co-expense-form" data-company="'+co.id+'" style="margin-top:14px;">'+
             '<div class="form-row three">'+
@@ -1376,16 +1400,28 @@
     var key = 'company-assets-'+co.id;
     var coOptions = cache.companies.map(function(c){ return '<option value="'+c.id+'"'+(c.id===co.id?' selected':'')+'>'+escapeHtml(c.name)+'</option>'; }).join('');
     var tCost=0, tDep=0, tBook=0, tBooked=0, noExpense=0;
-    var rows = list.map(function(a){
+    list.forEach(function(a){
       tCost += Number(a.cost); tDep += Number(a.accumulatedDepreciation); tBook += Number(a.bookValue);
       if(a.has_expense) tBooked += Number(a.cost); else noExpense++;
+    });
+    var af = getFilter('assets-'+co.id), noCat = 'بدون تصنيف';
+    var assetCats = distinctSorted(list.map(function(a){ return (a.category||'').trim() || noCat; }));
+    var shown = list.filter(function(a){
+      if(!dateInFilter(a.purchase_date, af)) return false;
+      if(af.cat && ((a.category||'').trim() || noCat)!==af.cat) return false;
+      if(af.flag==='yes' && !a.has_expense) return false;
+      if(af.flag==='no' && a.has_expense) return false;
+      return true;
+    });
+    var sCost = shown.reduce(function(t,a){ return t+Number(a.cost); },0), sBook = shown.reduce(function(t,a){ return t+Number(a.bookValue); },0);
+    var rows = shown.map(function(a){
       return '<tr>'+selectColCell(key, a.id)+
         '<td>'+escapeHtml(a.name)+'</td><td>'+(a.category?escapeHtml(a.category):'—')+'</td><td>'+fmtDate(a.purchase_date)+'</td>'+
         '<td class="amt">'+money(a.cost)+'</td><td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
         '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td><td class="amt teal">'+money(a.bookValue)+'</td>'+
         '<td>'+(a.has_expense?'<span class="tag rev">✓ مسجل كمصروف</span>':'<span style="color:var(--ink-soft);">— مش مسجل</span>')+'</td>'+
         '<td><button class="edit-x" data-edit-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="تعديل">✎</button><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="حذف الأصل ومصروف شرائه">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="10" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="empty">'+(list.length?'لا توجد أصول تطابق الفلتر المختار':'لا توجد أصول ثابتة مسجلة لهذه الشركة بعد')+'</td></tr>';
     return head+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>الشركة</label><select id="assets-company-select">'+coOptions+'</select></div>'+
     '<div class="grid-stats">'+
@@ -1397,8 +1433,12 @@
     '</div>'+
     (noExpense ? '<div class="muted-note" style="margin-bottom:10px;">فيه <b>'+noExpense+'</b> أصل مش مسجل له مصروف شراء. حدّده من الجدول واضغط «تسجيل المحدد كمصروف شراء أصول». لو كنتي سجّلتي شراءه كمصروف بإيدك قبل كده، متسجّلوش تاني عشان ميتحسبش مرتين.</div>' : '')+
     '<div class="panel"><div class="panel-head"><h3>سجل الأصول — «'+escapeHtml(co.name)+'»</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+      filterBarHtml('assets-'+co.id, assetCats, 'التصنيف', {label:'مصروف الشراء', options:[['','الكل'],['yes','مسجل كمصروف'],['no','غير مسجل']]})+
+      filterSummary('المعروض: <b>'+shown.length+'</b> من '+list.length+' أصل — التكلفة: <b>'+money(sCost)+'</b> | القيمة الدفترية: <b>'+money(sBook)+'</b>'+(filterActive('assets-'+co.id)?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':''))+
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml(key)+
-        '<button class="btn sm" id="assets-record-btn" data-company="'+co.id+'" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسجيل المحدد كمصروف شراء أصول</button></div>'+
+        '<button class="btn sm" id="assets-record-btn" data-company="'+co.id+'" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسجيل المحدد كمصروف شراء أصول</button>'+
+        '<button class="btn ghost sm" id="assets-bulk-life" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تعديل العمر الافتراضي للمحدد</button>'+
+        '<button class="btn ghost sm" id="assets-bulk-date" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تعديل تاريخ الشراء للمحدد</button></div>'+
       '<table><thead><tr>'+selectColHeader(key)+'<th>اسم الأصل</th><th>التصنيف</th><th>تاريخ الشراء</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th><th>مصروف الشراء</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>إضافة أصل</h3></div><div class="panel-body">'+
@@ -1498,8 +1538,12 @@
     if(cache.companies.length===0) return head+'<div class="panel"><div class="empty">أنشئ شركة أولاً من تبويب "الشركات".</div></div>';
     var co = cache.companies.find(function(c){ return c.id==uiState.entriesCompanyId; }) || cache.companies[0];
     var rep = cache.companyReports[co.id];
-    var list = cache.companyExpenses[co.id] || [];
+    var listAll = cache.companyExpenses[co.id] || [];
     var tableKey = 'company-exp-'+co.id;
+    var vf = getFilter(tableKey);
+    var list = listAll.filter(function(e){ return dateInFilter(e.entry_date, vf) && (!vf.cat || (e.category||'')===vf.cat); });
+    var viewCats = distinctSorted(listAll.map(function(e){ return e.category; }));
+    var viewShown = list.reduce(function(t,e){ return t+Number(e.amount); }, 0);
     var coOptions = cache.companies.map(function(c){ return '<option value="'+c.id+'"'+(c.id===co.id?' selected':'')+'>'+escapeHtml(c.name)+'</option>'; }).join('');
     var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
 
@@ -1510,7 +1554,7 @@
         '<td>'+escapeHtml(e.description||'—')+'</td>'+
         entryAmountCell('expense', e.amount)+
         '<td>'+coExpActions(co.id, e)+'</td></tr>';
-    }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف مسجلة على مستوى الشركة بعد</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">'+(listAll.length?'لا توجد مصاريف تطابق الفلتر المختار':'لا توجد مصاريف مسجلة على مستوى الشركة بعد')+'</td></tr>';
 
     var projRows = (rep && rep.projects.length) ? rep.projects.map(function(p){
       return '<tr><td>'+escapeHtml(p.name)+'</td><td class="amt debit">'+money(p.expense)+'</td></tr>';
@@ -1537,6 +1581,8 @@
       '</form>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>سجل مصاريف الشركة</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
+      filterBarHtml(tableKey, viewCats, 'البند')+
+      filterSummary('المعروض: <b>'+list.length+'</b> من '+listAll.length+' مصروف — الإجمالي: <b>'+money(viewShown)+'</b>'+(filterActive(tableKey)?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':''))+
       '<div style="padding:0 18px;">'+bulkDeleteBtnHtml(tableKey, '/companies/'+co.id+'/expenses/bulk-date')+'</div>'+
       '<table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
@@ -1558,7 +1604,11 @@
 
     var catOptions = expenseItemOptions(EXPENSE_CATEGORIES);
 
+    var ef = getFilter('entries');
+    var entryCats = distinctSorted(list.filter(function(e){ return e.kind==='expense'; }).map(function(e){ return e.category; }));
     var visibleList = list.filter(function(e){
+      if(!dateInFilter(e.entry_date, ef)) return false;
+      if(ef.cat && (e.kind!=='expense' || (e.category||'')!==ef.cat)) return false;
       if(uiState.entriesTypeFilter!=='all' && e.kind!==uiState.entriesTypeFilter) return false;
       if(uiState.entriesPayFilter!=='all'){
         if(e.kind!=='expense') return false;
@@ -1589,6 +1639,8 @@
         '<td><button class="edit-x" data-edit-entry="'+e.id+'" title="تعديل">✎</button><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="10" class="empty">'+(list.length?'لا توجد حركات تطابق الفلتر المختار':'لا توجد حركات بعد لهذا المشروع')+'</td></tr>';
 
+    var visExp = 0, visRev = 0;
+    visibleList.forEach(function(e){ if(e.kind==='expense') visExp += Number(e.amount); else visRev += Number(e.amount); });
     var typeFilterOpts = [['all','الكل'],['expense','مصروفات فقط'],['revenue','إيرادات فقط']].map(function(o){
       return '<option value="'+o[0]+'"'+(uiState.entriesTypeFilter===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('');
     var payFilterOpts = [['all','الكل'],['unpaid','عليها متبقي (غير مسددة بالكامل)'],['paid','مسددة بالكامل']].map(function(o){
@@ -1611,6 +1663,8 @@
         '<div class="field"><label>النوع</label><select id="entries-type-filter">'+typeFilterOpts+'</select></div>'+
         '<div class="field"><label>حالة السداد</label><select id="entries-pay-filter">'+payFilterOpts+'</select></div>'+
       '</div>'+
+      filterBarHtml('entries', entryCats, 'البند')+
+      filterSummary('المعروض: <b>'+visibleList.length+'</b> من '+list.length+' حركة — المصروفات: <b>'+money(visExp)+'</b> | الإيرادات: <b>'+money(visRev)+'</b>'+(filterActive('entries')?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':''))+
       '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('entries', '/entries/bulk-date')+
         '<button class="btn sm bulk-pay-btn" data-table="entries" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسديد المحدد</button></div>'+
       '<table><thead><tr>'+selectColHeader('entries')+'<th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
@@ -2541,6 +2595,12 @@
         catch(e){ alert(e.message); }
       });
     });
+    document.querySelectorAll('[data-flt]').forEach(function(el){
+      el.addEventListener('change', function(){ getFilter(el.getAttribute('data-flt'))[el.getAttribute('data-f')] = el.value; renderAdminMain(); });
+    });
+    document.querySelectorAll('[data-flt-clear]').forEach(function(b){
+      b.addEventListener('click', function(){ uiState.filters[b.getAttribute('data-flt-clear')] = {from:'',to:'',cat:'',flag:''}; renderAdminMain(); });
+    });
     var assetsCoSel = document.getElementById('assets-company-select');
     if(assetsCoSel) assetsCoSel.addEventListener('change', function(){ uiState.assetsCompanyId = Number(assetsCoSel.value); loadAdminPage(); });
     document.querySelectorAll('[data-goto-assets]').forEach(function(btn){
@@ -2557,7 +2617,29 @@
         var chosen = Array.from(getSelectionSet(recKey)).map(Number);
         return (cache.companyAssets[recCid]||[]).filter(function(a){ return chosen.indexOf(a.id)>=0 && !a.has_expense; });
       };
+      var lifeBtn = document.getElementById('assets-bulk-life'), dateBtn = document.getElementById('assets-bulk-date');
+      var pickedIds = function(){ return Array.from(getSelectionSet(recKey)).map(Number); };
+      if(lifeBtn) lifeBtn.addEventListener('click', function(){
+        var ids = pickedIds(); if(!ids.length) return;
+        openEditDialog({
+          title: 'تعديل العمر الافتراضي لـ '+ids.length+' أصل',
+          note: 'نفس عدد السنين هيتحط على كل الأصول المحددة، والإهلاك والقيمة الدفترية بيتحسبوا من جديد.',
+          saveLabel: 'تطبيق',
+          fields: [{key:'years', label:'سنوات العمر الافتراضي', type:'number', step:'0.5', value:''}],
+          onSave: async function(v){
+            var y = parseFloat(v.years); if(!isFinite(y) || y<=0) throw new Error('اكتب عدد سنين أكبر من صفر');
+            var r = await api('POST','/companies/'+recCid+'/assets/bulk-life',{ids:ids, years:y});
+            alert('تم تعديل العمر الافتراضي لـ '+r.updated+' أصل'); invalidateAndReload();
+          }
+        });
+      });
+      if(dateBtn) dateBtn.addEventListener('click', function(){
+        var ids = pickedIds(); if(ids.length) openBulkDateDialog(ids.length, '/companies/'+recCid+'/assets/bulk-date', ids, 'مصروف «شراء أصول» الخاص بكل أصل بياخد نفس التاريخ الجديد.');
+      });
       selectionListeners[recKey] = [function(){
+        var picked = getSelectionSet(recKey).size;
+        if(lifeBtn){ lifeBtn.textContent = 'تعديل العمر الافتراضي للمحدد ('+picked+')'; lifeBtn.style.display = picked ? 'inline-flex' : 'none'; }
+        if(dateBtn){ dateBtn.textContent = 'تعديل تاريخ الشراء للمحدد ('+picked+')'; dateBtn.style.display = picked ? 'inline-flex' : 'none'; }
         var n = unlinkedSelected().length;
         assetRecBtn.textContent = 'تسجيل المحدد كمصروف شراء أصول ('+n+')';
         assetRecBtn.style.display = n ? 'inline-flex' : 'none';
@@ -2727,7 +2809,7 @@
     });
 
     var eps = document.getElementById('entries-project-select');
-    if(eps) eps.addEventListener('change', function(){ uiState.entriesProjectId = Number(eps.value); loadAdminPage(); });
+    if(eps) eps.addEventListener('change', function(){ uiState.entriesProjectId = Number(eps.value); delete uiState.filters['entries']; loadAdminPage(); });
     document.querySelectorAll('[data-entries-scope]').forEach(function(chip){
       chip.addEventListener('click', function(){ uiState.entriesScope = chip.getAttribute('data-entries-scope'); loadAdminPage(); });
     });
