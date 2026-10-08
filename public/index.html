@@ -3863,7 +3863,7 @@
     return partnerHead('أداء المشروع — «'+escapeHtml(proj.name)+'»')+partnerChipsHtml('project')+
       '<div class="grid-stats">'+
         '<div class="stat"><div class="label">إجمالي إيرادات المشروع</div><div class="val credit">'+money(rep.revenue)+'</div></div>'+
-        '<div class="stat"><div class="label">إجمالي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
+        '<div class="stat"><div class="label">صافي مصروفات المشروع</div><div class="val debit">'+money(rep.expense)+'</div></div>'+
         '<div class="stat"><div class="label">صافي ربح المشروع</div><div class="val '+(rep.net>=0?'credit':'debit')+'">'+money(rep.net)+'</div></div>'+
         '<div class="stat"><div class="label">نسبتك في المشروع</div><div class="val teal">'+pct+'%</div></div>'+
         '<div class="stat"><div class="label">نصيبك من الإيرادات</div><div class="val credit">'+money(rep.revenue*pct/100)+'</div></div>'+
@@ -3872,7 +3872,6 @@
              '<div class="stat"><div class="label">المتبقي بعد خصم نصيبك من مصاريف المشروع</div><div class="val">'+settlementHtml(x.settlement)+'</div></div>' : '')+
         '<div class="stat"><div class="label">نصيبك من صافي الربح</div><div class="val teal">'+money(my.shareOfNet||0)+'</div></div>'+
         '<div class="stat"><div class="label">المتبقي من المصروفات (غير المسدد)</div><div class="val '+(xs.unpaid>0.001?'debit':'credit')+'">'+money(xs.unpaid)+'</div></div>'+
-        (xs.creditRows ? '<div class="stat"><div class="label">إلغاءات ومرتجعات مصروفات (زي شيكات ملغاة) — مش داخلة في غير المسدد</div><div class="val credit">'+money(xs.credits)+'</div></div>' : '')+
         (xs.overpaid>0.005 ? '<div class="stat"><div class="label">مسدد بالزيادة عن المصروف</div><div class="val">'+money(xs.overpaid)+'</div></div>' : '')+
       '</div>'+
       partnerExpenseTableHtml(x, 'مصاريف المشروع فقط — البنود الرئيسية ونصيبك منها')+
