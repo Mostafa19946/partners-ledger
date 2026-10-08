@@ -71,14 +71,16 @@
   .sidebar-foot{margin-top:auto;padding-top:18px;display:flex;flex-direction:column;gap:10px;}
   .logout-link{color:#e2bdb8;font-size:13px;cursor:pointer;background:none;border:none;font-family:inherit;padding:0;text-align:right;}
   .logout-link:hover{text-decoration:underline;}
-  .main{flex:1;padding:30px 34px;max-width:1180px;}
+  .main{flex:1;padding:30px 34px;max-width:1320px;min-width:0;}
   .page-head{margin-bottom:26px;}
   .page-head h2{margin:0 0 4px;font-size:22px;color:var(--teal-deep);font-weight:900;}
   .page-head p{margin:0;color:var(--ink-soft);font-size:13.5px;}
-  .grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:26px;}
-  .stat{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;}
+  .grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin-bottom:26px;}
+  .stat{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;min-width:0;}
   .stat .label{font-size:12px;color:var(--ink-soft);margin-bottom:8px;}
-  .stat .val{font-size:22px;font-weight:900;font-family:'IBM Plex Mono',monospace;}
+  .stat .val{font-size:19px;font-weight:900;font-family:'IBM Plex Mono',monospace;line-height:1.35;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
+  td.amt{white-space:nowrap;}
+  .balance-banner .v{overflow-wrap:anywhere;}
   .stat .val.credit{color:var(--credit);} .stat .val.debit{color:var(--debit);} .stat .val.teal{color:var(--teal);}
   .panel{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:22px;overflow:hidden;}
   .panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line);background:#fbf8f0;}
@@ -154,6 +156,9 @@
     thead{display:table-header-group;}
     tr{break-inside:avoid;}
     .ea-table thead th,.ea-table td:first-child{position:static !important;}
+    .ea-table{min-width:0 !important;font-size:9px !important;}
+    .ea-table th,.ea-table td{padding:3px 4px !important;}
+    .ea-table td:first-child{min-width:0 !important;max-width:none !important;}
     .grid-stats{break-inside:avoid;}
     input[type=text],input[type=number],input[type=date],select{border:none !important;background:transparent !important;padding:0 !important;-webkit-appearance:none;appearance:none;width:auto !important;}
   }
@@ -182,13 +187,14 @@
   var partnerActiveProject = null;
   var partnerActiveCompany = null;
   var partnerTab = 'account', partnerData = null;
-  var partnerPeriod = 'month', partnerPeriodScope = 'company', partnerPeriods = null, partnerAssets = null;
+  var partnerPeriod = 'month', partnerPeriodScope = 'company', partnerPeriods = null, partnerAssets = null, partnerMonthly = null, partnerMonthlyYear = null, partnerMonthlyScope = 'company';
   var PARTNER_NAV = [
     {key:'account', label:'حسابي الجاري', icon:'💳'},
     {key:'companyExp', label:'مصاريف الشركة', icon:'🏢'},
     {key:'assets', label:'الأصول الثابتة', icon:'🏗️'},
     {key:'project', label:'أداء المشروع', icon:'📁'},
     {key:'periods', label:'تحليل الفترات للمصاريف', icon:'📈'},
+    {key:'monthly', label:'تحليل المصاريف الشهري', icon:'🗓️'},
     {key:'sales', label:'تقرير المبيعات', icon:'🏷️'},
     {key:'inventory', label:'تقرير المخزون', icon:'📦'}
   ];
@@ -3426,6 +3432,7 @@
       el.addEventListener('click', function(){
         partnerTab = el.getAttribute('data-ptab');
         if(partnerTab==='assets') partnerAssets = null;
+        if(partnerTab==='monthly') partnerMonthly = null;
         document.querySelectorAll('[data-ptab]').forEach(function(n){ n.classList.toggle('active', n.getAttribute('data-ptab')===partnerTab); });
         if(partnerData) renderPartnerPage(); else loadPartnerDashboard();
       });
@@ -3521,6 +3528,10 @@
       if(!partnerAssets || partnerAssets.companyId!==partnerActiveCompany){ loadPartnerAssets(); return; }
       html = ppAssets();
     }
+    else if(partnerTab==='monthly'){
+      if(!partnerMonthly || partnerMonthly.key!==partnerMonthlyKey()){ loadPartnerMonthly(); return; }
+      html = ppMonthly();
+    }
     else if(partnerTab==='sales') html = ppSales(D);
     else if(partnerTab==='inventory') html = ppInventory(D);
     else if(partnerTab==='periods'){
@@ -3532,6 +3543,7 @@
     addPrintBar();
     bindPartnerChips(); bindLedgerToggles();
     if(partnerTab==='periods') bindPartnerPeriodControls();
+    if(partnerTab==='monthly') bindPartnerMonthlyControls();
   }
 
   function ppAccount(D){
@@ -3626,22 +3638,12 @@
   }
   function ppAssets(){
     var d = partnerAssets.data, t = d.totals;
-    var cats = {};
-    d.assets.forEach(function(a){ var k = (a.category||'').trim() || 'بدون تصنيف'; (cats[k] = cats[k] || []).push(a); });
-    var sum = function(list){ return list.reduce(function(r,a){ return {n:r.n+1, cost:r.cost+a.cost, dep:r.dep+a.accumulatedDepreciation, book:r.book+a.bookValue}; }, {n:0,cost:0,dep:0,book:0}); };
-    var totalRow = function(label, x, cls){
-      return '<tr class="'+cls+'"><td colspan="3">'+label+' <span class="mono">('+x.n+' أصل)</span></td><td class="amt">'+money(x.cost)+'</td><td></td><td class="amt">'+money(x.dep)+'</td><td class="amt">'+money(x.book)+'</td></tr>';
-    };
-    var body = Object.keys(cats).sort(natCmpAr).map(function(k){
-      var list = cats[k].slice().sort(function(a,b){ return String(b.purchaseDate).localeCompare(String(a.purchaseDate)); });
-      return '<tr class="ea-g0"><td colspan="7">'+escapeHtml(k)+'</td></tr>'+
-        list.map(function(a){
-          return '<tr><td style="padding-right:30px;" colspan="3">'+escapeHtml(a.name)+' <span style="color:var(--ink-soft);font-size:12px;">— '+fmtDate(a.purchaseDate)+'</span></td>'+
-            '<td class="amt">'+money(a.cost)+'</td><td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
-            '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td><td class="amt teal">'+money(a.bookValue)+'</td></tr>';
-        }).join('')+totalRow('إجمالي '+escapeHtml(k), sum(cats[k]), 'ea-g1');
-    }).join('') || '<tr><td colspan="7" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
-    return partnerHead('الأصول الثابتة — «'+escapeHtml(d.name)+'»', 'سجل أصول الشركة بإهلاكها وقيمتها الدفترية (بطريقة القسط الثابت حسب العمر الافتراضي).')+partnerChipsHtml('company')+
+    var rows = d.categories.map(function(g){
+      return '<tr><td>'+escapeHtml(g.category)+'</td><td class="mono">'+g.count+'</td><td class="amt">'+money(g.cost)+'</td>'+
+        '<td class="amt debit">'+money(g.accumulatedDepreciation)+'</td><td class="amt teal">'+money(g.bookValue)+'</td>'+
+        '<td class="amt">'+money(g.myBookShare)+'</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
+    return partnerHead('الأصول الثابتة — «'+escapeHtml(d.name)+'»', 'أصول الشركة مجمّعة بالتصنيف: العدد والتكلفة والإهلاك والقيمة الدفترية ونصيبك منها.')+partnerChipsHtml('company')+
       '<div class="grid-stats">'+
         '<div class="stat"><div class="label">عدد الأصول</div><div class="val teal">'+t.count+'</div></div>'+
         '<div class="stat"><div class="label">إجمالي تكلفة الأصول</div><div class="val">'+money(t.cost)+'</div></div>'+
@@ -3651,9 +3653,68 @@
         '<div class="stat"><div class="label">نصيبك من تكلفة الأصول</div><div class="val teal">'+money(t.myCostShare)+'</div></div>'+
         '<div class="stat"><div class="label">نصيبك من القيمة الدفترية</div><div class="val credit">'+money(t.myBookShare)+'</div></div>'+
       '</div>'+
-      '<div class="panel"><div class="panel-head"><h3>سجل الأصول مرتب بالتصنيف</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
-        '<table><thead><tr><th colspan="3">الأصل</th><th>التكلفة</th><th>سنوات العمر</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th></tr></thead><tbody>'+body+
-        totalRow('الإجمالي الكلي', sum(d.assets), 'ea-grand')+'</tbody></table></div></div>';
+      '<div class="panel"><div class="panel-head"><h3>الأصول حسب التصنيف</h3></div><div class="panel-body" style="padding:0;overflow-x:auto;">'+
+        '<table><thead><tr><th>التصنيف</th><th>عدد الأصول</th><th>التكلفة</th><th>الإهلاك المتراكم</th><th>القيمة الدفترية</th><th>نصيبك من القيمة الدفترية ('+d.percentage+'%)</th></tr></thead><tbody>'+rows+
+        '<tr class="ea-grand"><td>الإجمالي</td><td class="mono">'+t.count+'</td><td class="amt">'+money(t.cost)+'</td><td class="amt">'+money(t.accumulatedDepreciation)+'</td><td class="amt">'+money(t.bookValue)+'</td><td class="amt">'+money(t.myBookShare)+'</td></tr></tbody></table></div></div>';
+  }
+
+  // ---- monthly expense analysis: main items x 12 months for one year, with the partner's own share ----
+  function partnerMonthlyScopeId(){
+    if(partnerMonthlyScope==='project' && partnerActiveProject) return 'p'+partnerActiveProject;
+    if(partnerActiveCompany) return 'c'+partnerActiveCompany;
+    return partnerActiveProject ? 'p'+partnerActiveProject : '';
+  }
+  function partnerMonthlyKey(){ return partnerMonthlyScopeId()+'|'+(partnerMonthlyYear||''); }
+  async function loadPartnerMonthly(){
+    var main = document.getElementById('main-area'), id = partnerMonthlyScopeId();
+    if(!id){ main.innerHTML = partnerHead('تحليل المصاريف الشهري')+'<div class="empty">مفيش شركة ولا مشروع متربط بحسابك.</div>'; return; }
+    main.innerHTML = '<div class="empty">جارِ التحميل…</div>';
+    try{
+      var q = (id.charAt(0)==='c' ? 'companyId=' : 'projectId=')+id.slice(1)+(partnerMonthlyYear?('&year='+partnerMonthlyYear):'');
+      var data = await api('GET','/me/expense-monthly?'+q);
+      partnerMonthlyYear = data.year;
+      partnerMonthly = { key: partnerMonthlyKey(), data: data };
+      if(partnerTab==='monthly') renderPartnerPage();
+    }catch(e){ main.innerHTML = '<div class="panel"><div class="panel-body"><div class="error-box">'+escapeHtml(e.message)+'</div></div></div>'; }
+  }
+  function ppMonthly(){
+    var d = partnerMonthly.data;
+    var coName = (cache.meCompanies.find(function(x){ return x.id===partnerActiveCompany; })||{}).name;
+    var prName = (cache.meProjects.find(function(x){ return x.id===partnerActiveProject; })||{}).name;
+    var scopeChips = '<div class="select-projects">'+
+      (partnerActiveCompany ? '<div class="chip'+(d.scope==='company'?' active':'')+'" data-mscope="company">الشركة ككل — '+escapeHtml(coName||'')+'</div>' : '')+
+      (partnerActiveProject ? '<div class="chip'+(d.scope==='project'?' active':'')+'" data-mscope="project">المشروع فقط — '+escapeHtml(prName||'')+'</div>' : '')+'</div>';
+    var yearSel = '<div class="field" style="max-width:200px;margin-bottom:14px;"><label>السنة</label><select id="pm-year">'+
+      (d.years.length?d.years:[d.year]).map(function(y){ return '<option value="'+y+'"'+(y===d.year?' selected':'')+'>'+y+'</option>'; }).join('')+'</select></div>';
+    var cell = function(v, cls){
+      return Math.abs(v)<0.005 ? '<td class="num ea-zero">—</td>' : '<td class="num'+(cls?' '+cls:'')+'">'+money(v)+'</td>';
+    };
+    var rowCells = function(months, total, tcls){ return months.map(function(v){ return cell(v); }).join('')+'<td class="num tot'+(tcls?' '+tcls:'')+'">'+money(total)+'</td>'; };
+    var body = d.groups.map(function(g){
+      var r = '<tr class="ea-g1"><td>'+escapeHtml(g.name)+'</td>'+rowCells(g.months, g.total)+'</tr>';
+      r += g.children.map(function(ch){ return '<tr><td style="padding-right:26px;">'+escapeHtml(ch.name)+'</td>'+rowCells(ch.months, ch.total)+'</tr>'; }).join('');
+      if(g.children.length && g.direct) r += '<tr><td style="padding-right:26px;color:var(--ink-soft);">مصروفات مسجلة على «'+escapeHtml(g.name)+'» مباشرة</td>'+rowCells(g.direct.months, g.direct.total)+'</tr>';
+      return r;
+    }).join('') || '<tr><td colspan="14" class="empty">لا توجد مصاريف في سنة '+d.year+'</td></tr>';
+    var maxI = d.monthTotals.reduce(function(bi, v, i, arr){ return v>arr[bi]?i:bi; }, 0);
+    return partnerHead('تحليل المصاريف الشهري — «'+escapeHtml(d.name)+'»', 'مصاريف كل شهر في السنة المختارة بالبنود الرئيسية، ونصيبك منها.')+scopeChips+
+      (d.scope==='company' ? partnerChipsHtml('company') : partnerChipsHtml('project'))+yearSel+
+      '<div class="grid-stats">'+
+        '<div class="stat"><div class="label">إجمالي مصاريف سنة '+d.year+'</div><div class="val debit">'+money(d.total)+'</div></div>'+
+        '<div class="stat"><div class="label">نسبتك</div><div class="val teal">'+d.percentage+'%</div></div>'+
+        '<div class="stat"><div class="label">نصيبك من مصاريف السنة</div><div class="val teal">'+money(d.myTotal)+'</div></div>'+
+        '<div class="stat"><div class="label">أعلى شهر مصاريف</div><div class="val">'+(d.total? EA_MONTHS[maxI]+' — '+money(d.monthTotals[maxI]) : '—')+'</div></div>'+
+      '</div>'+
+      '<div class="ea-wrap"><table class="ea-table"><thead><tr><th>البند</th>'+EA_MONTHS.map(function(m){ return '<th>'+m+'</th>'; }).join('')+'<th>الإجمالي</th></tr></thead><tbody>'+body+
+        '<tr class="ea-grand"><td>إجمالي المصاريف</td>'+rowCells(d.monthTotals, d.total)+'</tr>'+
+        '<tr class="ea-g3"><td>نصيبك ('+d.percentage+'%)</td>'+rowCells(d.myMonths, d.myTotal)+'</tr></tbody></table></div>';
+  }
+  function bindPartnerMonthlyControls(){
+    var y = document.getElementById('pm-year');
+    if(y) y.addEventListener('change', function(){ partnerMonthlyYear = Number(y.value); renderPartnerPage(); });
+    document.querySelectorAll('[data-mscope]').forEach(function(ch){
+      ch.addEventListener('click', function(){ partnerMonthlyScope = ch.getAttribute('data-mscope'); partnerMonthlyYear = null; renderPartnerPage(); });
+    });
   }
 
   // ---- period analysis of expenses (company as a whole, or one project) ----

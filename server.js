@@ -1941,8 +1941,8 @@ app.get('/api/me/expense-periods', auth, async (req, res) => {
   }
 });
 
-// Partner view of a company's fixed-asset register (read only). Same figures as the admin register, plus the partner's
-// own share of the cost / book value; the free-text notes stay private to the admin.
+// Partner view of a company's fixed assets (read only), as ONE ROW PER CATEGORY: counts, cost, depreciation and book
+// value with the partner's own share. Individual assets, their dates and notes never leave the server.
 app.get('/api/me/assets', auth, async (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
   try {
@@ -1954,20 +1954,97 @@ app.get('/api/me/assets', auth, async (req, res) => {
     )).rows[0];
     if (!cp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
     const assets = (await pool.query(
-      `SELECT id, name, category, purchase_date::text AS purchase_date, cost, useful_life_years
-       FROM company_assets WHERE company_id=$1 ORDER BY purchase_date DESC, id`, [companyId]
-    )).rows.map(withAssetDepreciation).map(a => ({
-      id: a.id, name: a.name, category: a.category, purchaseDate: a.purchase_date, cost: a.cost,
-      usefulLifeYears: a.usefulLifeYears, accumulatedDepreciation: a.accumulatedDepreciation, bookValue: a.bookValue
-    }));
+      `SELECT category, purchase_date::text AS purchase_date, cost, useful_life_years FROM company_assets WHERE company_id=$1`, [companyId]
+    )).rows.map(withAssetDepreciation);
     const pct = Number(cp.percentage) / 100;
-    const sum = (f) => assets.reduce((t, a) => t + f(a), 0);
-    const cost = sum(a => a.cost), dep = sum(a => a.accumulatedDepreciation), book = sum(a => a.bookValue);
-    res.json({ companyId, name: cp.name, percentage: Number(cp.percentage), assets,
-      totals: { count: assets.length, cost, accumulatedDepreciation: dep, bookValue: book, myCostShare: cost * pct, myBookShare: book * pct } });
+    const groups = {};
+    assets.forEach(a => {
+      const k = (a.category || '').trim() || 'بدون تصنيف';
+      const g = groups[k] || (groups[k] = { category: k, count: 0, cost: 0, accumulatedDepreciation: 0, bookValue: 0 });
+      g.count++; g.cost += a.cost; g.accumulatedDepreciation += a.accumulatedDepreciation; g.bookValue += a.bookValue;
+    });
+    const categories = Object.values(groups).sort((x, y) => x.category.localeCompare(y.category, 'ar'))
+      .map(g => ({ ...g, myCostShare: g.cost * pct, myBookShare: g.bookValue * pct }));
+    const sum = (f) => categories.reduce((t, g) => t + f(g), 0);
+    const cost = sum(g => g.cost), book = sum(g => g.bookValue);
+    res.json({ companyId, name: cp.name, percentage: Number(cp.percentage), categories,
+      totals: { count: sum(g => g.count), cost, accumulatedDepreciation: sum(g => g.accumulatedDepreciation), bookValue: book,
+                myCostShare: cost * pct, myBookShare: book * pct } });
   } catch (e) {
     console.error('partner assets failed', e);
-    res.status(500).json({ error: 'تعذر تحميل سجل الأصول' });
+    res.status(500).json({ error: 'تعذر تحميل الأصول' });
+  }
+});
+
+// Partner-facing MONTHLY expense analysis for one year: main items (the chart's groups and their direct items) as rows,
+// the 12 months as columns, plus the partner's own share. Never line-level detail.
+app.get('/api/me/expense-monthly', auth, async (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ error: 'غير متاح' });
+  try {
+    const companyId = parseInt(req.query.companyId, 10), projectId = parseInt(req.query.projectId, 10);
+    const wantYear = parseInt(req.query.year, 10) || null;
+    let name, pctNum, rows;
+    if (companyId) {
+      const cp = (await pool.query(
+        `SELECT cp.percentage, c.name FROM company_partners cp JOIN companies c ON c.id = cp.company_id
+         WHERE cp.company_id=$1 AND cp.partner_id=$2`, [companyId, req.user.partnerId]
+      )).rows[0];
+      if (!cp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذه الشركة' });
+      name = cp.name; pctNum = Number(cp.percentage);
+      rows = (await pool.query(`
+        SELECT y, m, category, SUM(amount) AS total FROM (
+          SELECT EXTRACT(YEAR FROM e.entry_date)::int AS y, EXTRACT(MONTH FROM e.entry_date)::int AS m,
+                 COALESCE(NULLIF(TRIM(e.category), ''), 'أخرى') AS category, e.amount
+          FROM entries e JOIN projects pr ON pr.id = e.project_id WHERE e.kind = 'expense' AND pr.company_id = $1
+          UNION ALL
+          SELECT EXTRACT(YEAR FROM entry_date)::int, EXTRACT(MONTH FROM entry_date)::int,
+                 COALESCE(NULLIF(TRIM(category), ''), 'أخرى'), amount FROM company_expenses WHERE company_id = $1
+        ) t GROUP BY y, m, category
+      `, [companyId])).rows;
+    } else if (projectId) {
+      const pp = (await pool.query(
+        `SELECT pp.percentage, pr.name FROM project_partners pp JOIN projects pr ON pr.id = pp.project_id
+         WHERE pp.project_id=$1 AND pp.partner_id=$2`, [projectId, req.user.partnerId]
+      )).rows[0];
+      if (!pp) return res.status(403).json({ error: 'لا تملك صلاحية الوصول لهذا المشروع' });
+      name = pp.name; pctNum = Number(pp.percentage);
+      rows = (await pool.query(`
+        SELECT EXTRACT(YEAR FROM entry_date)::int AS y, EXTRACT(MONTH FROM entry_date)::int AS m,
+               COALESCE(NULLIF(TRIM(category), ''), 'أخرى') AS category, SUM(amount) AS total
+        FROM entries WHERE kind = 'expense' AND project_id = $1 GROUP BY 1, 2, 3
+      `, [projectId])).rows;
+    } else {
+      return res.status(400).json({ error: 'companyId أو projectId مطلوب' });
+    }
+    const years = [...new Set(rows.map(r => r.y))].sort((a, b) => b - a);
+    const year = years.includes(wantYear) ? wantYear : (years[0] || new Date().getFullYear());
+    const { byId, byNorm } = await loadExpenseIndex();
+    const pathOf = (node) => { const path = []; let cur = node, guard = 0; while (cur && guard++ < 50) { path.unshift(cur); cur = cur.parent_id == null ? null : byId[cur.parent_id]; } return path; };
+    const zeros = () => new Array(12).fill(0);
+    const groups = {};
+    rows.filter(r => r.y === year).forEach(r => {
+      const t = Number(r.total), mi = r.m - 1;
+      const node = byNorm[normCat(r.category)], path = node ? pathOf(node) : [];
+      const root = path[0] || null, child = path[1] || null;
+      const g = groups[root ? 'r' + root.id : 'x'] || (groups[root ? 'r' + root.id : 'x'] =
+        { name: root ? root.name : UNCLASSIFIED_LABEL, rank: root ? root.rank : 1e9, months: zeros(), direct: zeros(), children: {} });
+      g.months[mi] += t;
+      if (child) { const c = g.children[child.id] || (g.children[child.id] = { name: child.name, rank: child.rank, months: zeros() }); c.months[mi] += t; }
+      else g.direct[mi] += t;
+    });
+    const sum = (arr) => arr.reduce((a, b) => a + b, 0), nz = (arr) => arr.some(v => Math.abs(v) >= 0.005);
+    const out = Object.values(groups).sort((a, b) => a.rank - b.rank).filter(g => nz(g.months)).map(g => ({
+      name: g.name, months: g.months, total: sum(g.months),
+      direct: nz(g.direct) ? { months: g.direct, total: sum(g.direct) } : null,
+      children: Object.values(g.children).sort((a, b) => a.rank - b.rank).filter(c => nz(c.months)).map(c => ({ name: c.name, months: c.months, total: sum(c.months) }))
+    }));
+    const monthTotals = zeros(); out.forEach(g => g.months.forEach((v, i) => { monthTotals[i] += v; }));
+    const pct = pctNum / 100, total = sum(monthTotals);
+    res.json({ scope: companyId ? 'company' : 'project', name, percentage: pctNum, year, years, groups: out,
+      monthTotals, total, myMonths: monthTotals.map(v => v * pct), myTotal: total * pct });
+  } catch (e) {
+    console.error('partner monthly expenses failed', e);
+    res.status(500).json({ error: 'تعذر تحميل التحليل الشهري' });
   }
 });
 
