@@ -1265,6 +1265,17 @@ app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
 
 // Edit an item's status / price / area / building (name, unit, quantity stay fixed here to avoid
 // silently breaking sale history; delete+recreate if those truly need to change)
+// Change the status of many items at once ("" clears it). Units that already have sales keep whatever you set here until a
+// sale on them is added / edited / deleted, which re-applies the usual rule (sold out = "مباع").
+app.post('/api/inventory/items/bulk-status', auth, requireAdmin, async (req, res) => {
+  const { ids, status } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد أصناف محددة' });
+  if (typeof status !== 'string' || status.trim().length > 40) return res.status(400).json({ error: 'الحالة غير صحيحة' });
+  const idList = ids.map(n => parseInt(n, 10)).filter(Boolean);
+  const upd = await pool.query('UPDATE inventory_items SET status=$1 WHERE id = ANY($2::int[])', [status.trim(), idList]);
+  res.json({ updated: upd.rowCount });
+});
+
 app.put('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const v = (x) => (x === undefined ? null : x);

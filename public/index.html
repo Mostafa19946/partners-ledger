@@ -198,7 +198,7 @@
   var uiState = { entriesProjectId:null, caCompanyId:null, reportProjectId:null,
     analyticsProjectId:null, analyticsPeriod:'month', invProjectId:null, invCollectionPeriod:'month', editingSaleId:null,
     eaScope:'all', eaYear:null, eaShowZero:false, caLedgerPartnerId:null, caLedgerYear:null,
-    invStatusFilter:'all', invBuildingFilter:'all', caTxPartnerFilter:'all', caTxKindFilter:'all',
+    invStatusFilter:'all', invBuildingFilter:'all', invTypeFilter:'all', invGroupBy:'type', caTxPartnerFilter:'all', caTxKindFilter:'all',
     filters:{}, assetsCompanyId:null, entriesScope:'project', entriesCompanyId:null, entriesTypeFilter:'all', entriesPayFilter:'all' };
 
   var EXPENSE_CATEGORIES = ['رواتب وأجور','إيجار','مواد خام / بضاعة','نقل ومواصلات','صيانة','كهرباء ومياه','تسويق وإعلان','ضرائب ورسوم','أخرى'];
@@ -2085,22 +2085,30 @@
     var buildingFilterOptions = '<option value="all">كل العمارات</option>'+buildingValues.map(function(b){
       return '<option value="'+escapeHtml(b)+'"'+(uiState.invBuildingFilter===b?' selected':'')+'>'+escapeHtml(b)+'</option>';
     }).join('');
+    var typeValues = distinctSorted(items.map(function(it){ return (it.unit||'').trim(); }));
+    var typeFilterOptions2 = '<option value="all">كل الأنواع</option>'+typeValues.map(function(t){
+      return '<option value="'+escapeHtml(t)+'"'+(uiState.invTypeFilter===t?' selected':'')+'>'+escapeHtml(t)+'</option>';
+    }).join('');
+    var groupByOptions = [['type','بالنوع'],['building-type','بالعمارة ثم النوع'],['none','بدون تقسيم']].map(function(o){
+      return '<option value="'+o[0]+'"'+(uiState.invGroupBy===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('');
     var staleSold = items.filter(function(it){
       return soldByItem[it.id]!==undefined && (Number(it.quantity_in) - soldByItem[it.id]) <= 0.000001 && it.status!=='مباع';
     });
     var filteredItems = items.filter(function(it){
       if(uiState.invStatusFilter!=='all' && (it.status||'')!==uiState.invStatusFilter) return false;
       if(uiState.invBuildingFilter!=='all' && (it.building||'')!==uiState.invBuildingFilter) return false;
+      if(uiState.invTypeFilter!=='all' && (it.unit||'').trim()!==uiState.invTypeFilter) return false;
       return true;
     });
 
     filteredItems = filteredItems.slice().sort(function(a,b){
       return natCmpAr(a.building||'\uFFFF', b.building||'\uFFFF') || natCmpAr(a.unit||'\uFFFF', b.unit||'\uFFFF') || natCmpAr(a.name, b.name);
     });
-    var itemRows = filteredItems.map(function(it){
+    var ITEM_COLS = 13;
+    var itemRowHtml = function(it){
       var sold = soldByItem[it.id]||0;
       var remainingQty = Number(it.quantity_in) - sold;
-      return '<tr>'+selectColCell('inv-items', it.id)+
+      return '<tr class="item-row" data-gb="'+escapeHtml(it.building||'')+'" data-gt="'+escapeHtml((it.unit||'').trim())+'">'+selectColCell('inv-items', it.id)+
         '<td><input type="text" class="ei-name" data-item="'+it.id+'" value="'+escapeHtml(it.name)+'" style="width:170px;"></td>'+
         '<td><input type="text" class="ei-unit" data-item="'+it.id+'" value="'+escapeHtml(it.unit||'')+'" list="inv-unit-types" style="width:110px;" placeholder="—"></td>'+
         '<td><input type="text" class="ei-building" data-item="'+it.id+'" value="'+escapeHtml(it.building||'')+'" style="width:90px;" placeholder="—"></td>'+
@@ -2112,7 +2120,43 @@
         '<td><input type="number" class="ei-garden-area" data-item="'+it.id+'" value="'+(it.garden_area!=null?it.garden_area:'')+'" min="0" step="0.01" style="width:90px;"></td>'+
         '<td><button class="btn ghost sm" data-save-item="'+it.id+'">حفظ</button></td>'+
         '<td><button class="del-x" data-del-item="'+it.id+'">✕</button></td></tr>';
-    }).join('') || '<tr><td colspan="12" class="empty">'+(items.length?'لا توجد أصناف تطابق الفلتر المختار':'لا توجد أصناف مخزون لهذا المشروع بعد')+'</td></tr>';
+    };
+
+    // the table can be split into sections (by type, or by building then type), each with a count / value / status summary
+    var groupInfo = function(list){
+      var st = {}, value = 0;
+      list.forEach(function(it){ value += (Number(it.unit_price)||0)*(Number(it.quantity_in)||0); var k = (it.status||'').trim()||'بدون حالة'; st[k] = (st[k]||0)+1; });
+      return '<span class="mono">'+list.length+' صنف</span> | القيمة: '+money(value)+' | متاح '+(st['متاح']||0)+' · محجوز '+(st['محجوز']||0)+' · مباع '+(st['مباع']||0);
+    };
+    var groupRow = function(label, list, level, selAttrs){
+      return '<tr class="'+(level===0?'ea-g0':'ea-g2')+'"><td><input type="checkbox" class="group-select" '+selAttrs+' title="تحديد كل أصناف القسم"></td>'+
+        '<td colspan="'+(ITEM_COLS-1)+'" style="'+(level===0?'':'padding-right:26px;')+'">'+label+' — '+groupInfo(list)+'</td></tr>';
+    };
+    var byKey = function(list, fn){ var o = {}; list.forEach(function(it){ var k = fn(it); (o[k] = o[k] || []).push(it); }); return o; };
+    var typeOf = function(it){ return (it.unit||'').trim() || 'بدون نوع'; }, buildingOf = function(it){ return (it.building||'').trim() || 'بدون عمارة'; };
+    var byName = function(x,y){ return natCmpAr(x.name, y.name); };
+    var itemRows = '';
+    if(uiState.invGroupBy==='type'){
+      var gt = byKey(filteredItems, typeOf);
+      Object.keys(gt).sort(natCmpAr).forEach(function(t){
+        itemRows += groupRow('النوع: '+escapeHtml(t), gt[t], 0, 'data-sel-t="'+escapeHtml(t==='بدون نوع'?'':t)+'"');
+        itemRows += gt[t].slice().sort(function(x,y){ return natCmpAr(x.building||'\uFFFF', y.building||'\uFFFF') || byName(x,y); }).map(itemRowHtml).join('');
+      });
+    } else if(uiState.invGroupBy==='building-type'){
+      var gb = byKey(filteredItems, buildingOf);
+      Object.keys(gb).sort(natCmpAr).forEach(function(b){
+        itemRows += groupRow('العمارة: '+escapeHtml(b), gb[b], 0, 'data-sel-b="'+escapeHtml(b==='بدون عمارة'?'':b)+'"');
+        var gtb = byKey(gb[b], typeOf);
+        Object.keys(gtb).sort(natCmpAr).forEach(function(t){
+          itemRows += groupRow('النوع: '+escapeHtml(t), gtb[t], 1, 'data-sel-b="'+escapeHtml(b==='بدون عمارة'?'':b)+'" data-sel-t="'+escapeHtml(t==='بدون نوع'?'':t)+'"');
+          itemRows += gtb[t].slice().sort(byName).map(itemRowHtml).join('');
+        });
+      });
+    } else {
+      itemRows = filteredItems.map(itemRowHtml).join('');
+    }
+    if(!itemRows) itemRows = '<tr><td colspan="'+ITEM_COLS+'" class="empty">'+(items.length?'لا توجد أصناف تطابق الفلتر المختار':'لا توجد أصناف مخزون لهذا المشروع بعد')+'</td></tr>';
+
 
     var editingSaleForOptions = uiState.editingSaleId ? sales.find(function(s){return s.id===uiState.editingSaleId;}) : null;
     var NO_BUILDING = '—';
@@ -2208,11 +2252,14 @@
     '<div class="panel"><div class="panel-head"><h3>المخزون</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
       (staleSold.length ? '<div class="muted-note" style="margin:0 18px 12px;">من هنا ورايح حالة الوحدة بتتحول لـ«مباع» تلقائي أول ما تتسجل عليها عملية بيع. لكن فيه <b>'+staleSold.length+'</b> وحدة اتباعت قبل كده وحالتها لسه مش «مباع». '+
         '<button class="btn sm" id="sync-sold-status" type="button" style="margin-right:8px;">تحديثها لـ«مباع»</button></div>' : '')+
-      '<div class="form-row" style="padding:0 18px;max-width:460px;">'+
-        '<div class="field"><label>فلتر الحالة</label><select id="inv-status-filter">'+statusFilterOptions+'</select></div>'+
-        '<div class="field"><label>فلتر العمارة</label><select id="inv-building-filter">'+buildingFilterOptions+'</select></div>'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:0 18px;">'+
+        '<div class="field" style="min-width:150px;margin:0;"><label>فلتر الحالة</label><select id="inv-status-filter">'+statusFilterOptions+'</select></div>'+
+        '<div class="field" style="min-width:150px;margin:0;"><label>فلتر العمارة</label><select id="inv-building-filter">'+buildingFilterOptions+'</select></div>'+
+        '<div class="field" style="min-width:150px;margin:0;"><label>فلتر النوع</label><select id="inv-type-filter">'+typeFilterOptions2+'</select></div>'+
+        '<div class="field" style="min-width:170px;margin:0;"><label>تقسيم الجدول</label><select id="inv-groupby">'+groupByOptions+'</select></div>'+
       '</div>'+
-      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('inv-items')+'</div>'+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('inv-items')+
+        '<button class="btn sm" id="inv-bulk-status" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تغيير حالة المحدد</button></div>'+
       '<datalist id="inv-unit-types">'+Array.from(new Set(items.map(function(it){ return it.unit; }).filter(Boolean))).map(function(u){ return '<option value="'+escapeHtml(u)+'">'; }).join('')+'</datalist>'+
       '<table><thead><tr>'+selectColHeader('inv-items')+'<th>الصنف</th><th>الوحدة</th><th>العمارة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
       '<div class="muted-note" style="padding:8px 18px;">تقدر تعدّل العمارة، الحالة، السعر، والمساحة مباشرة في الجدول واضغط "حفظ".</div>'+
@@ -3003,11 +3050,49 @@
     });
     var invStatusFilterEl = document.getElementById('inv-status-filter');
     if(invStatusFilterEl) invStatusFilterEl.addEventListener('change', function(){ uiState.invStatusFilter = invStatusFilterEl.value; renderAdminMain(); });
+    var invTypeFilterEl = document.getElementById('inv-type-filter');
+    if(invTypeFilterEl) invTypeFilterEl.addEventListener('change', function(){ uiState.invTypeFilter = invTypeFilterEl.value; renderAdminMain(); });
+    var invGroupByEl = document.getElementById('inv-groupby');
+    if(invGroupByEl) invGroupByEl.addEventListener('change', function(){ uiState.invGroupBy = invGroupByEl.value; renderAdminMain(); });
+    // ticking a section header ticks every item in that section
+    document.querySelectorAll('.group-select').forEach(function(g){
+      g.addEventListener('change', function(){
+        var hasB = g.hasAttribute('data-sel-b'), hasT = g.hasAttribute('data-sel-t');
+        document.querySelectorAll('tr.item-row').forEach(function(tr){
+          if(hasB && tr.getAttribute('data-gb')!==g.getAttribute('data-sel-b')) return;
+          if(hasT && tr.getAttribute('data-gt')!==g.getAttribute('data-sel-t')) return;
+          var box = tr.querySelector('.row-select'); if(box && box.checked!==g.checked){ box.checked = g.checked; box.dispatchEvent(new Event('change',{bubbles:true})); }
+        });
+      });
+    });
+    var invBulkStatusBtn = document.getElementById('inv-bulk-status');
+    if(invBulkStatusBtn){
+      selectionListeners['inv-items'] = [function(set){
+        invBulkStatusBtn.textContent = 'تغيير حالة المحدد ('+set.size+')'; invBulkStatusBtn.style.display = set.size ? 'inline-flex' : 'none';
+      }];
+      invBulkStatusBtn.addEventListener('click', function(){
+        var ids = Array.from(getSelectionSet('inv-items')).map(Number); if(!ids.length) return;
+        var pid = uiState.invProjectId, sold = {};
+        (cache.inventorySales[pid]||[]).forEach(function(s){ sold[s.item_id] = (sold[s.item_id]||0) + Number(s.quantity); });
+        var soldOut = (cache.inventoryItems[pid]||[]).filter(function(it){ return ids.indexOf(it.id)>=0 && sold[it.id]!==undefined && Number(it.quantity_in)-sold[it.id] <= 0.000001; }).length;
+        openEditDialog({
+          title: 'تغيير حالة '+ids.length+' صنف',
+          note: soldOut ? ('منهم <b>'+soldOut+'</b> وحدة اتباعت بالكامل. لو اخترتي حالة غير «مباع» هتفضل زي ما اخترتيها لحد ما تتسجل أو تتعدل أو تتحذف عملية بيع عليها.') : '',
+          saveLabel: 'تطبيق',
+          fields: [{key:'status', label:'الحالة الجديدة', type:'select', value:'متاح',
+                    optionsHtml: ITEM_STATUSES.map(function(s){ return '<option value="'+escapeHtml(s)+'">'+escapeHtml(s)+'</option>'; }).join('')+'<option value="">بدون حالة</option>'}],
+          onSave: async function(v){
+            var r = await api('POST','/inventory/items/bulk-status',{ids:ids, status:v.status});
+            alert('تم تغيير حالة '+r.updated+' صنف'+(v.status?(' لـ «'+v.status+'»'):' (بدون حالة)')); invalidateAndReload();
+          }
+        });
+      });
+    }
     var invBuildingFilterEl = document.getElementById('inv-building-filter');
     if(invBuildingFilterEl) invBuildingFilterEl.addEventListener('change', function(){ uiState.invBuildingFilter = invBuildingFilterEl.value; renderAdminMain(); });
 
     var ips = document.getElementById('inv-project-select');
-    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); uiState.editingSaleId=null; uiState.invStatusFilter='all'; uiState.invBuildingFilter='all'; loadAdminPage(); });
+    if(ips) ips.addEventListener('change', function(){ uiState.invProjectId = Number(ips.value); uiState.editingSaleId=null; uiState.invStatusFilter='all'; uiState.invBuildingFilter='all'; uiState.invTypeFilter='all'; loadAdminPage(); });
     var aif = document.getElementById('add-item-form');
     if(aif) aif.addEventListener('submit', async function(ev){
       ev.preventDefault();
