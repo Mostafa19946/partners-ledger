@@ -185,6 +185,8 @@
     .reg-wrap{overflow:visible !important;max-height:none !important;}
     .reg-table thead th{position:static !important;}
     .reg-table .act-col,.seg{display:none !important;}
+    .reg-table{font-size:9px !important;}
+    .reg-table td,.reg-table th{padding:3px 4px !important;}
     .reg-table tr.ledger-detail-row{display:none !important;}
     .ea-table{min-width:0 !important;font-size:9px !important;}
     .ea-table th,.ea-table td{padding:3px 4px !important;}
@@ -1904,20 +1906,27 @@
   function pbarHtml(pct){ return '<div class="pbar"><i style="width:'+Math.max(0,Math.min(100,pct)).toFixed(1)+'%"></i></div>'; }
 
   // numbers about one sale and its customer, straight from what is already loaded (used by the collection dialog and the quick form)
+  // garage / maintenance deposit / utilities of one sale: separate from the sale price, but part of what the customer owes
+  function saleExtras(s){
+    var n = function(v){ return Number(v)||0; };
+    var o = { g:n(s.garage_value), gc:n(s.garage_collected), m:n(s.maintenance_value), mc:n(s.maintenance_collected), u:n(s.utilities_value), uc:n(s.utilities_collected) };
+    o.rem = (o.g-o.gc) + (o.m-o.mc) + (o.u-o.uc);
+    return o;
+  }
   function saleCollectionInfo(saleId){
     var pid = uiState.invProjectId, sales = cache.inventorySales[pid]||[], colls = cache.inventoryCollections[pid]||[];
     var got = {}; colls.forEach(function(x){ got[x.sale_id] = (got[x.sale_id]||0) + Number(x.amount); });
     var s = sales.find(function(x){ return x.id===Number(saleId); }); if(!s) return null;
-    var value = Number(s.sale_amount)||0, g = got[s.id]||0, name = (s.customer_name||'').trim();
-    var custRem = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }).reduce(function(t,x){ return t + (Number(x.sale_amount)||0) - (got[x.id]||0); }, 0) : value-g;
-    var custUnits = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }).length : 1;
-    return { s:s, value:value, got:g, rem:value-g, name:name, custRem:custRem, custUnits:custUnits };
+    var value = Number(s.sale_amount)||0, g = got[s.id]||0, name = (s.customer_name||'').trim(), ex = saleExtras(s);
+    var mine = name ? sales.filter(function(x){ return (x.customer_name||'').trim()===name; }) : [s];
+    var custRem = mine.reduce(function(t,x){ return t + (Number(x.sale_amount)||0) - (got[x.id]||0) + saleExtras(x).rem; }, 0);
+    return { s:s, value:value, got:g, rem:value-g, ex:ex, totalRem:value-g+ex.rem, name:name, custRem:custRem, custUnits:mine.length };
   }
   async function recordCollection(info, amount, date, note){
     await api('POST','/inventory/collections',{saleId:info.s.id, amount:amount, date:date, description:note||null});
     var rem = info.rem - amount, custRem = info.custRem - amount;
     alert('تم تسجيل تحصيل '+money(amount)+' على «'+info.s.item_name+'»'+(info.name?(' — العميل: '+info.name):'')+
-      '\nالمتبقي على الوحدة: '+money(rem)+(info.custUnits>1?('\nإجمالي المتبقي على العميل ('+info.custUnits+' وحدات): '+money(custRem)):'')+
+      '\nالمتبقي على الوحدة: '+money(rem)+(info.ex.rem>0.005?('\nالمتبقي من الجراج/الوديعة: '+money(info.ex.rem)):'')+'\nإجمالي المتبقي على العميل'+(info.custUnits>1?(' ('+info.custUnits+' وحدات)'):'')+': '+money(custRem)+
       '\nواتحدّث تلقائي في حسابات العملاء.');
     invalidateAndReload();
   }
@@ -1925,7 +1934,9 @@
     var info = saleCollectionInfo(saleId); if(!info) return;
     openEditDialog({
       title: 'تسجيل تحصيل — '+info.s.item_name,
-      note: (info.name?('العميل: <b>'+escapeHtml(info.name)+'</b><br>'):'')+'قيمة الوحدة: <b>'+money(info.value)+'</b> | المحصل: <b>'+money(info.got)+'</b> | المتبقي: <b>'+money(info.rem)+'</b>',
+      note: (info.name?('العميل: <b>'+escapeHtml(info.name)+'</b><br>'):'')+'قيمة الوحدة: <b>'+money(info.value)+'</b> | المحصل: <b>'+money(info.got)+'</b> | المتبقي: <b>'+money(info.rem)+'</b>'+
+        (Math.abs(info.ex.g)+Math.abs(info.ex.m)+Math.abs(info.ex.u)>0.005 ? '<br>الجراج: <b>'+money(info.ex.g-info.ex.gc)+'</b> | وديعة الصيانة: <b>'+money(info.ex.m-info.ex.mc)+'</b> متبقي — اتسجلهم من «تعديل العقد»' : '')+
+        '<br>إجمالي المتبقي على العميل: <b>'+money(info.custRem)+'</b>',
       saveLabel: 'تسجيل التحصيل',
       fields: [{key:'amount', label:'مبلغ التحصيل', type:'number', step:'0.01', value: info.rem>0.005 ? info.rem.toFixed(2) : ''},
                {key:'date', label:'تاريخ التحصيل', type:'date', value: todayStr()},
@@ -1938,7 +1949,7 @@
     });
   }
 
-  function saleDetailRow(r, allCollections){
+  function saleDetailRow(r, allCollections, cols){
     var s = r.s;
     var mine = allCollections.filter(function(x){ return x.sale_id===s.id; }).sort(function(a,b){ return String(a.collection_date||'').localeCompare(String(b.collection_date||'')); });
     var body = mine.map(function(x){
@@ -1955,7 +1966,7 @@
       ['المرافق + الصحي (قيمة / محصل)', money(s.utilities_value)+' / '+money(s.utilities_collected)], ['إجمالي المستحقات', money(dues)],
       ['فروق تحصيل', money(s.collection_diff)], ['مساحة الوحدة', s.item_net_area!=null ? s.item_net_area : '—'], ['مساحة الجاردن', s.item_garden_area!=null ? s.item_garden_area : '—'],
       ['ملاحظات', escapeHtml(s.description||'—')]];
-    return '<tr id="coll-detail-'+s.id+'" class="ledger-detail-row" data-bld="'+escapeHtml(r.building)+'" style="display:none;"><td colspan="9" style="padding:14px 16px;background:#faf7ea;">'+
+    return '<tr id="coll-detail-'+s.id+'" class="ledger-detail-row" data-bld="'+escapeHtml(r.building)+'" style="display:none;"><td colspan="'+cols+'" style="padding:14px 16px;background:#faf7ea;">'+
       '<div class="det-grid"><div><div style="font-weight:800;margin-bottom:8px;">التحصيلات المسجلة</div>'+
         '<table style="width:100%;"><thead><tr><th>التاريخ</th><th>المبلغ</th><th>ملاحظات</th><th></th><th></th></tr></thead><tbody>'+body+'</tbody></table>'+
         '<button class="btn sm" data-add-coll="'+s.id+'" type="button" style="margin-top:10px;">＋ إضافة تحصيل</button></div>'+
@@ -1964,14 +1975,19 @@
   }
 
   function salesKpiHtml(sales, collectedBySale){
-    var value = 0, got = 0; sales.forEach(function(s){ value += Number(s.sale_amount)||0; got += collectedBySale[s.id]||0; });
-    var rem = value - got, pct = value>0 ? got/value*100 : 0;
+    var value = 0, got = 0, extraVal = 0, dues = 0, paid = 0;
+    sales.forEach(function(s){
+      var ex = saleExtras(s), v = Number(s.sale_amount)||0, g = collectedBySale[s.id]||0;
+      value += v; got += g; extraVal += ex.g + ex.m + ex.u; dues += v + ex.g + ex.m + ex.u; paid += g + ex.gc + ex.mc + ex.uc;
+    });
+    var totalRem = dues - paid, pct = dues>0 ? paid/dues*100 : 0;
     return '<div class="grid-stats" style="margin-bottom:10px;">'+
       '<div class="stat"><div class="label">عدد الوحدات المباعة</div><div class="val teal">'+sales.length+'</div></div>'+
-      '<div class="stat"><div class="label">إجمالي قيمة المبيعات</div><div class="val">'+money(value)+'</div></div>'+
-      '<div class="stat"><div class="label">المحصل من العملاء</div><div class="val credit">'+money(got)+'</div></div>'+
-      '<div class="stat"><div class="label">المتبقي لدى العملاء</div><div class="val '+(rem>0.001?'debit':'credit')+'">'+money(rem)+'</div></div></div>'+
-      '<div style="margin:0 0 22px;"><div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);"><span>نسبة التحصيل الكلية</span><b>'+pct.toFixed(1)+'%</b></div>'+pbarHtml(pct)+'</div>';
+      '<div class="stat"><div class="label">إجمالي سعر البيع (الوحدات فقط)</div><div class="val">'+money(value)+'</div></div>'+
+      '<div class="stat"><div class="label">المحصل من الوحدات</div><div class="val credit">'+money(got)+'</div></div>'+
+      '<div class="stat"><div class="label">الجراج + وديعة الصيانة (منفصلين عن السعر)</div><div class="val">'+money(extraVal)+'</div></div>'+
+      '<div class="stat"><div class="label">إجمالي المتبقي على العملاء (شامل الجراج والوديعة)</div><div class="val '+(totalRem>0.001?'debit':'credit')+'">'+money(totalRem)+'</div></div></div>'+
+      '<div style="margin:0 0 22px;"><div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);"><span>نسبة التحصيل الكلية (من كل المستحقات)</span><b>'+pct.toFixed(1)+'%</b></div>'+pbarHtml(pct)+'</div>';
   }
 
   function quickCollectionPanelHtml(pOptions){
@@ -2005,8 +2021,9 @@
       var i = sSel.value ? saleCollectionInfo(sSel.value) : null;
       if(!i){ info.textContent = ''; amt.value = ''; return; }
       info.innerHTML = 'العميل: <b>'+escapeHtml(i.name||'بدون اسم')+'</b> &nbsp;|&nbsp; الوحدة: <b>'+escapeHtml(i.s.item_name)+'</b><br>'+
-        'قيمة الوحدة: <b>'+money(i.value)+'</b> &nbsp;|&nbsp; المحصل: <b>'+money(i.got)+'</b> &nbsp;|&nbsp; المتبقي: <b style="color:'+(i.rem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.rem)+'</b>'+
-        (i.custUnits>1 ? '<br>العميل عنده <b>'+i.custUnits+'</b> وحدات، إجمالي المتبقي عليه: <b>'+money(i.custRem)+'</b>' : '');
+        'قيمة الوحدة: <b>'+money(i.value)+'</b> &nbsp;|&nbsp; المحصل: <b>'+money(i.got)+'</b> &nbsp;|&nbsp; المتبقي من الوحدة: <b style="color:'+(i.rem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.rem)+'</b>'+
+        (Math.abs(i.ex.g)+Math.abs(i.ex.m)+Math.abs(i.ex.u)>0.005 ? '<br>الجراج: <b>'+money(i.ex.g)+'</b> (متبقي '+money(i.ex.g-i.ex.gc)+') &nbsp;|&nbsp; وديعة الصيانة: <b>'+money(i.ex.m)+'</b> (متبقي '+money(i.ex.m-i.ex.mc)+')' : '')+
+        '<br>إجمالي المتبقي على العميل'+(i.custUnits>1?' ('+i.custUnits+' وحدات)':'')+': <b style="color:'+(i.custRem>0.005?'var(--debit)':'var(--credit)')+'">'+money(i.custRem)+'</b>';
       amt.value = i.rem>0.005 ? i.rem.toFixed(2) : '';
     }
     function fillSales(){
@@ -2033,11 +2050,14 @@
   function salesRegisterHtml(sales, collections, collectedBySale){
     if(!sales.length) return '<div class="panel"><div class="empty">لا توجد مبيعات مسجلة بعد. سجّلي أول عملية من «تسجيل بيع جديد».</div></div>';
     var sf = uiState.sf;
+    var hasUtil = sales.some(function(s){ var e = saleExtras(s); return e.u || e.uc; });
+    var COLS = 14 + (hasUtil ? 2 : 0);                    // select + 13 data columns (+ 2 for utilities when any sale has them)
     var all = sales.map(function(s){
-      var value = Number(s.sale_amount)||0, got = collectedBySale[s.id]||0;
+      var value = Number(s.sale_amount)||0, got = collectedBySale[s.id]||0, ex = saleExtras(s);
+      var dues = value + ex.g + ex.m + ex.u, paid = got + ex.gc + ex.mc + ex.uc;
       return { s:s, id:s.id, building:(s.item_building||s.building_no||'').trim()||'بدون عمارة', type:(s.item_unit||'').trim()||'غير محدد',
-        unit:s.item_name, customer:(s.customer_name||'').trim()||'—', date:String(s.sale_date).slice(0,10), value:value, got:got, rem:value-got,
-        pct: value>0 ? got/value*100 : 0, state: collState(value, got) };
+        unit:s.item_name, customer:(s.customer_name||'').trim()||'—', date:String(s.sale_date).slice(0,10), value:value, got:got, rem:value-got, ex:ex,
+        totalRem:dues-paid, pct: dues>0 ? paid/dues*100 : 0, state: collState(dues, paid) };
     });
     var q = (sf.q||'').trim().toLowerCase();
     var rows = all.filter(function(r){
@@ -2049,41 +2069,46 @@
       if(q && (r.unit+' '+r.customer).toLowerCase().indexOf(q)<0) return false;
       return true;
     });
-    var tot = function(list){ return list.reduce(function(t,r){ return {n:t.n+1, value:t.value+r.value, got:t.got+r.got, rem:t.rem+r.rem}; }, {n:0,value:0,got:0,rem:0}); };
+    var tot = function(list){ return list.reduce(function(t,r){ return {n:t.n+1, value:t.value+r.value, got:t.got+r.got, rem:t.rem+r.rem, g:t.g+r.ex.g, gc:t.gc+r.ex.gc, m:t.m+r.ex.m, mc:t.mc+r.ex.mc, u:t.u+r.ex.u, uc:t.uc+r.ex.uc, totalRem:t.totalRem+r.totalRem}; }, {n:0,value:0,got:0,rem:0,g:0,gc:0,m:0,mc:0,u:0,uc:0,totalRem:0}); };
     var group = function(list, key){ var o = {}; list.forEach(function(r){ (o[r[key]] = o[r[key]] || []).push(r); }); return o; };
-    var chips = function(t){ return '<span class="chipline">'+t.n+' وحدة · بيع '+money(t.value)+' · محصل '+money(t.got)+' · متبقي '+money(t.rem)+'</span>'; };
+    var chips = function(t){ return '<span class="chipline">'+t.n+' وحدة · سعر البيع '+money(t.value)+' · إجمالي المتبقي على العملاء '+money(t.totalRem)+'</span>'; };
     var realB = function(r){ return (r.s.item_building||r.s.building_no||'').trim(); }, realT = function(r){ return (r.s.item_unit||'').trim(); };
+    var dim = function(v, cls){ return Math.abs(v)<0.005 ? '<td class="amt" style="color:var(--ink-soft);">—</td>' : '<td class="amt'+(cls?' '+cls:'')+'">'+money(v)+'</td>'; };
+    var extraCells = function(t){ return dim(t.g)+dim(t.gc,'credit')+dim(t.m)+dim(t.mc,'credit')+(hasUtil ? dim(t.u)+dim(t.uc,'credit') : ''); };
     var body = '', byB = group(rows,'building');
     Object.keys(byB).sort(natCmpAr).forEach(function(b){
       var bl = byB[b], eb = escapeHtml(b);
       body += '<tr class="bld-head" data-bld-toggle="'+eb+'" data-bld="'+eb+'"><td><input type="checkbox" class="group-select" data-sel-b="'+escapeHtml(realB(bl[0]))+'"></td>'+
-        '<td colspan="8"><span class="caret">▾</span>العمارة: '+eb+chips(tot(bl))+'</td></tr>';
+        '<td colspan="'+(COLS-1)+'"><span class="caret">▾</span>العمارة: '+eb+chips(tot(bl))+'</td></tr>';
       var byT = group(bl,'type');
       Object.keys(byT).sort(natCmpAr).forEach(function(t){
         var tl = byT[t];
         body += '<tr class="typ-head" data-bld="'+eb+'"><td><input type="checkbox" class="group-select" data-sel-b="'+escapeHtml(realB(tl[0]))+'" data-sel-t="'+escapeHtml(realT(tl[0]))+'"></td>'+
-          '<td colspan="8" style="padding-right:30px;">النوع: '+escapeHtml(t)+chips(tot(tl))+'</td></tr>';
+          '<td colspan="'+(COLS-1)+'" style="padding-right:30px;">النوع: '+escapeHtml(t)+chips(tot(tl))+'</td></tr>';
         tl.slice().sort(function(x,y){ return natCmpAr(x.unit, y.unit); }).forEach(function(r){
           body += '<tr class="sale-row item-row" data-bld="'+eb+'" data-gb="'+escapeHtml(realB(r))+'" data-gt="'+escapeHtml(realT(r))+'">'+selectColCell('inv-sales', r.id)+
-            '<td style="padding-right:34px;font-weight:700;">'+escapeHtml(r.unit)+'</td><td>'+escapeHtml(r.customer)+'</td><td>'+fmtDate(r.date)+'</td>'+
-            '<td class="amt">'+money(r.value)+'</td><td class="amt credit">'+money(r.got)+'</td>'+
+            '<td style="padding-right:34px;font-weight:700;white-space:nowrap;">'+escapeHtml(r.unit)+'</td><td>'+escapeHtml(r.customer)+'</td><td>'+fmtDate(r.date)+'</td>'+
+            '<td class="amt">'+money(r.value)+'</td><td class="amt credit">'+money(r.got)+'</td><td class="amt '+(r.rem>0.001?'debit':'')+'">'+money(r.rem)+'</td>'+
+            extraCells(r.ex)+
+            '<td class="amt '+(r.totalRem>0.001?'debit':'credit')+'" style="font-weight:900;">'+money(r.totalRem)+'</td>'+
             '<td style="min-width:130px;">'+collChip(r.state)+' <span class="mono" style="font-size:12px;">'+r.pct.toFixed(0)+'%</span>'+pbarHtml(r.pct)+'</td>'+
-            '<td class="amt '+(r.rem>0.001?'debit':'')+'">'+money(r.rem)+'</td>'+
             '<td class="act-col"><button class="btn sm" data-add-coll="'+r.id+'" type="button">＋ تحصيل</button> '+
               '<button class="btn ghost sm" data-view-collections="'+r.id+'" type="button">تفاصيل</button> '+
-              '<button class="edit-x" data-edit-sale="'+r.id+'" title="تعديل العقد">✎</button><button class="del-x" data-del-sale="'+r.id+'" title="حذف العملية">✕</button></td></tr>'+
-            saleDetailRow(r, collections);
+              '<button class="edit-x" data-edit-sale="'+r.id+'" title="تعديل العقد (بما فيه الجراج والوديعة)">✎</button><button class="del-x" data-del-sale="'+r.id+'" title="حذف العملية">✕</button></td></tr>'+
+            saleDetailRow(r, collections, COLS);
         });
       });
     });
-    if(!rows.length) body = '<tr><td colspan="9" class="empty">لا توجد مبيعات تطابق الفلتر المختار</td></tr>';
-    var T = tot(rows), pctAll = T.value>0 ? T.got/T.value*100 : 0;
+    if(!rows.length) body = '<tr><td colspan="'+COLS+'" class="empty">لا توجد مبيعات تطابق الفلتر المختار</td></tr>';
+    var T = tot(rows), dues = T.value+T.g+T.m+T.u, pctAll = dues>0 ? (T.got+T.gc+T.mc+T.uc)/dues*100 : 0;
     var byTypeAll = group(rows,'type');
-    var typeRows = Object.keys(byTypeAll).sort(natCmpAr).map(function(t){ var x = tot(byTypeAll[t]), p = x.value>0 ? x.got/x.value*100 : 0;
-      return '<tr><td style="font-weight:700;">'+escapeHtml(t)+'</td><td class="mono">'+x.n+'</td><td class="amt">'+money(x.value)+'</td><td class="amt credit">'+money(x.got)+'</td><td class="amt '+(x.rem>0.001?'debit':'')+'">'+money(x.rem)+'</td><td style="min-width:120px;"><span class="mono" style="font-size:12px;">'+p.toFixed(0)+'%</span>'+pbarHtml(p)+'</td></tr>'; }).join('');
+    var typeRows = Object.keys(byTypeAll).sort(natCmpAr).map(function(t){ var x = tot(byTypeAll[t]), d = x.value+x.g+x.m+x.u, p = d>0 ? (x.got+x.gc+x.mc+x.uc)/d*100 : 0;
+      return '<tr><td style="font-weight:700;">'+escapeHtml(t)+'</td><td class="mono">'+x.n+'</td><td class="amt">'+money(x.value)+'</td><td class="amt credit">'+money(x.got)+'</td><td class="amt '+(x.rem>0.001?'debit':'')+'">'+money(x.rem)+'</td>'+
+        dim(x.g+x.m+x.u)+'<td class="amt '+(x.totalRem>0.001?'debit':'credit')+'" style="font-weight:900;">'+money(x.totalRem)+'</td><td style="min-width:120px;"><span class="mono" style="font-size:12px;">'+p.toFixed(0)+'%</span>'+pbarHtml(p)+'</td></tr>'; }).join('');
     var opt = function(list, cur, allLabel){ return '<option value="">'+allLabel+'</option>'+list.map(function(v){ return '<option value="'+escapeHtml(v)+'"'+(cur===v?' selected':'')+'>'+escapeHtml(v)+'</option>'; }).join(''); };
     var fld = function(l, inner, w){ return '<div class="field" style="min-width:'+(w||140)+'px;margin:0;"><label>'+l+'</label>'+inner+'</div>'; };
     var active = !!(sf.b||sf.t||sf.st||sf.q||sf.from||sf.to);
+    var th = function(t){ return '<th>'+t+'</th>'; };
     return '<div class="panel"><div class="panel-head"><h3>تقرير المبيعات — مقسّم بالعمارة والنوع</h3></div><div class="panel-body">'+
       '<div class="filter-bar" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">'+
         fld('العمارة','<select data-sf="b">'+opt(distinctSorted(all.map(function(r){return r.building;})), sf.b, 'كل العمارات')+'</select>')+
@@ -2094,12 +2119,14 @@
         fld('بحث (وحدة / عميل)','<input type="text" data-sf="q" value="'+escapeHtml(sf.q||'')+'" placeholder="اكتبي واضغطي Enter">',170)+
         '<button class="btn ghost sm" type="button" data-sf-clear="1" style="margin-bottom:2px;">مسح الفلتر</button></div>'+
       '<div class="muted-note" style="margin-bottom:8px;">المعروض: <b>'+rows.length+'</b> من '+all.length+' عملية'+(active?' <span style="color:var(--brass);">(الفلتر شغّال)</span>':'')+
-        ' — اضغطي على اسم العمارة لطي القسم أو فتحه. «＋ تحصيل» بيسجل تحصيل على العميل مباشرة، و«تفاصيل» بتفتح التحصيلات وبيانات العقد.</div>'+
+        ' — الجراج ووديعة الصيانة منفصلين عن سعر البيع، وداخلين في <b>إجمالي المتبقي على العميل</b>. بتسجّلي محصلهم من «تعديل العقد» (✎). اضغطي على اسم العمارة لطي القسم.</div>'+
       '<div>'+bulkDeleteBtnHtml('inv-sales', '/inventory/sales/bulk-date')+'</div>'+
-      '<div class="reg-wrap"><table class="reg-table"><thead><tr>'+selectColHeader('inv-sales')+'<th>الوحدة</th><th>العميل</th><th>تاريخ التعاقد</th><th>سعر البيع</th><th>المحصل</th><th>حالة التحصيل</th><th>المتبقي</th><th class="act-col"></th></tr></thead><tbody>'+body+
-        '<tr class="reg-grand"><td></td><td colspan="3">الإجمالي ('+T.n+' وحدة)</td><td class="amt">'+money(T.value)+'</td><td class="amt">'+money(T.got)+'</td><td>'+pctAll.toFixed(1)+'%</td><td class="amt">'+money(T.rem)+'</td><td class="act-col"></td></tr></tbody></table></div>'+
+      '<div class="reg-wrap"><table class="reg-table"><thead><tr>'+selectColHeader('inv-sales')+th('الوحدة')+th('العميل')+th('تاريخ التعاقد')+th('سعر البيع')+th('المحصل من الوحدة')+th('المتبقي من الوحدة')+
+        th('الجراج')+th('محصل الجراج')+th('وديعة الصيانة')+th('محصل الوديعة')+(hasUtil ? th('المرافق + الصحي')+th('محصل المرافق') : '')+th('إجمالي المتبقي على العميل')+th('حالة التحصيل')+'<th class="act-col"></th></tr></thead><tbody>'+body+
+        '<tr class="reg-grand"><td></td><td colspan="3">الإجمالي ('+T.n+' وحدة)</td><td class="amt">'+money(T.value)+'</td><td class="amt">'+money(T.got)+'</td><td class="amt">'+money(T.rem)+'</td>'+extraCells(T)+
+          '<td class="amt">'+money(T.totalRem)+'</td><td>'+pctAll.toFixed(1)+'%</td><td class="act-col"></td></tr></tbody></table></div>'+
       '<h3 style="margin:22px 0 10px;font-size:15px;color:var(--teal-deep);">الإجمالي حسب النوع</h3>'+
-      '<div class="reg-wrap" style="max-height:none;"><table class="reg-table"><thead><tr><th>النوع</th><th>عدد الوحدات</th><th>سعر البيع</th><th>المحصل</th><th>المتبقي</th><th>نسبة التحصيل</th></tr></thead><tbody>'+typeRows+'</tbody></table></div>'+
+      '<div class="reg-wrap" style="max-height:none;"><table class="reg-table"><thead><tr>'+th('النوع')+th('عدد الوحدات')+th('سعر البيع')+th('المحصل من الوحدات')+th('المتبقي من الوحدات')+th('الجراج + الوديعة (القيمة)')+th('إجمالي المتبقي على العملاء')+th('نسبة التحصيل')+'</tr></thead><tbody>'+typeRows+'</tbody></table></div>'+
     '</div></div>';
   }
 
