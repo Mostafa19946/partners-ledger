@@ -127,6 +127,36 @@
   .cat-chip{font-size:11.5px;padding:3px 10px;border-radius:14px;background:#eee6d6;color:#7a5c1c;font-weight:600;}
   .remaining-pos{color:var(--debit);font-weight:700;}
   .remaining-zero{color:var(--ink-soft);}
+  .edit-x{background:none;border:none;color:var(--teal);cursor:pointer;font-size:15px;padding:2px 6px;line-height:1;}
+  .lock-x{color:var(--ink-soft);font-size:13px;padding:2px 6px;cursor:help;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(14,59,54,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;}
+  .modal-box{background:var(--paper-raised);border-radius:var(--radius);width:100%;max-width:460px;max-height:90vh;overflow:auto;padding:20px 22px;box-shadow:0 20px 50px rgba(0,0,0,.3);}
+  .modal-box h3{margin:0 0 14px;font-size:17px;color:var(--teal-deep);}
+  .modal-actions{display:flex;gap:10px;margin-top:14px;}
+  .modal-error{color:var(--debit);font-size:13px;min-height:18px;margin-top:6px;}
+  .print-bar{display:flex;justify-content:flex-end;margin-bottom:10px;}
+  .print-only{display:none;}
+  @media print{
+    @page{size:A4 landscape;margin:10mm;}
+    html,body{background:#fff !important;}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .sidebar,.no-print,.print-bar,button,.btn,.del-x,.edit-x,.lock-x,.chip,.select-projects,.period-toggle,input[type=checkbox],input[type=file],.modal-overlay{display:none !important;}
+    .shell{display:block !important;}
+    .main{padding:0 !important;width:100% !important;max-width:none !important;}
+    .print-only{display:block !important;}
+    .print-header{margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #0e3b36;}
+    .ph-brand{font-weight:800;font-size:12px;color:#0e3b36;}
+    .ph-title{font-size:20px;font-weight:800;}
+    .ph-date{font-size:11px;color:#555;}
+    .panel{box-shadow:none !important;border:1px solid #bbb !important;margin-bottom:12px;}
+    .panel-body,.ea-wrap{overflow:visible !important;max-height:none !important;}
+    table{width:100% !important;font-size:10.5px !important;}
+    thead{display:table-header-group;}
+    tr{break-inside:avoid;}
+    .ea-table thead th,.ea-table td:first-child{position:static !important;}
+    .grid-stats{break-inside:avoid;}
+    input[type=text],input[type=number],input[type=date],select{border:none !important;background:transparent !important;padding:0 !important;-webkit-appearance:none;appearance:none;width:auto !important;}
+  }
   @media (max-width:860px){
     .shell{flex-direction:column;}
     .sidebar{width:100%;flex-direction:row;align-items:center;padding:14px 18px;flex-wrap:wrap;position:static;height:auto;overflow-y:visible;}
@@ -900,6 +930,7 @@
     else if(adminTab==='report') main.innerHTML = pageReport();
     else if(adminTab==='settings') main.innerHTML = pageSettings();
     bindAdminPageEvents();
+    if(adminTab!=='settings') addPrintBar();
   }
 
   // Fetches whatever the current tab needs, but skips the network round-trip entirely
@@ -1053,14 +1084,107 @@
   // ---- Reusable row-selection + bulk delete for tables ----
   var selectionSets = {};
   var selectionListeners = {};
+  // ---- one small dialog used by every "edit" button ----
+  function openEditDialog(opts){
+    var ov = document.createElement('div'); ov.className = 'modal-overlay no-print';
+    var fieldsHtml = opts.fields.map(function(f, i){
+      var id = 'ed-f-'+i, input;
+      if(f.type==='select') input = '<select id="'+id+'">'+f.optionsHtml+'</select>';
+      else input = '<input id="'+id+'" type="'+(f.type||'text')+'" value="'+escapeHtml(f.value==null?'':f.value)+'"'+(f.step?' step="'+f.step+'"':'')+'>';
+      return '<div class="field"><label>'+f.label+'</label>'+input+'</div>';
+    }).join('');
+    ov.innerHTML = '<div class="modal-box"><h3>'+opts.title+'</h3>'+(opts.note?'<div class="muted-note" style="margin-bottom:10px;">'+opts.note+'</div>':'')+
+      '<form id="ed-form">'+fieldsHtml+'<div class="modal-error" id="ed-err"></div>'+
+      '<div class="modal-actions"><button class="btn" type="submit">'+(opts.saveLabel||'حفظ')+'</button><button class="btn ghost" type="button" id="ed-cancel">إلغاء</button></div></form></div>';
+    document.body.appendChild(ov);
+    opts.fields.forEach(function(f, i){
+      if(f.type!=='select' || f.value==null) return;
+      var el = ov.querySelector('#ed-f-'+i);
+      if(f.value && !Array.from(el.options).some(function(o){ return o.value===String(f.value); })){
+        var o = document.createElement('option'); o.value = f.value; o.textContent = f.value; el.insertBefore(o, el.firstChild);   // keep an old value that isn't in the list
+      }
+      el.value = f.value;
+    });
+    var onKey = function(e){ if(e.key==='Escape') close(); };
+    var close = function(){ if(ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener('keydown', onKey); };
+    document.addEventListener('keydown', onKey);
+    ov.addEventListener('click', function(e){ if(e.target===ov) close(); });
+    ov.querySelector('#ed-cancel').addEventListener('click', close);
+    ov.querySelector('#ed-form').addEventListener('submit', async function(ev){
+      ev.preventDefault();
+      var vals = {}; opts.fields.forEach(function(f, i){ vals[f.key] = ov.querySelector('#ed-f-'+i).value; });
+      var btn = ev.target.querySelector('button[type=submit]'); btn.disabled = true;
+      try{ await opts.onSave(vals); close(); }
+      catch(e){ ov.querySelector('#ed-err').textContent = e.message || 'تعذر الحفظ'; btn.disabled = false; }
+    });
+    var first = ov.querySelector('#ed-f-0'); if(first) first.focus();
+    return ov;
+  }
+  function needAmount(v){ var n = parseFloat(v); if(!isFinite(n) || n===0) throw new Error('المبلغ غير صحيح'); return n; }
+  function needDate(v){ if(!/^\d{4}-\d{2}-\d{2}$/.test(v||'')) throw new Error('اختار تاريخ صحيح'); return v; }
+
+  // change the date of every ticked row at once: one new date for all, or move each by N days (+1 / -1)
+  function openBulkDateDialog(count, url, ids){
+    openEditDialog({
+      title: 'تعديل تاريخ '+count+' صف محدد',
+      note: 'املي واحد بس: <b>تاريخ جديد</b> هيتحط على كل الصفوف المحددة، أو <b>عدد أيام</b> بيتحرك بيه تاريخ كل صف (1 = يوم بعد، -1 = يوم قبل). مفيد لو الاستيراد جاب التواريخ بفرق يوم.',
+      saveLabel: 'تطبيق',
+      fields: [{key:'date', label:'تاريخ جديد لكل المحدد', type:'date', value:''}, {key:'shift', label:'أو: إزاحة بعدد أيام', type:'number', step:'1', value:''}],
+      onSave: async function(v){
+        var hasDate = !!v.date, hasShift = v.shift!=='' && Number(v.shift)!==0;
+        if(hasDate===hasShift) throw new Error('املي تاريخ جديد أو عدد أيام، مش الاتنين ولا فاضيين');
+        var body = {ids:ids}; if(hasDate) body.date = v.date; else body.shiftDays = parseInt(v.shift, 10);
+        var r = await api('POST', url, body);
+        alert('تم تعديل تاريخ '+r.updated+' صف'+(r.updated<count?'\n(الباقي مش بيتعدل بالجملة: مصروفات شراء الأصول بتاخد تاريخ الأصل)':''));
+        invalidateAndReload();
+      }
+    });
+  }
+
+  // ---- printing: the current page without the sidebar, buttons and forms, under a small title header ----
+  function printCurrentPage(){
+    var main = document.getElementById('main-area'); if(!main) return;
+    var titleEl = main.querySelector('.page-head h2'), title = titleEl ? titleEl.textContent : document.title;
+    var hdr = document.createElement('div'); hdr.className = 'print-only print-header';
+    hdr.innerHTML = '<div class="ph-brand">دفتر الشركاء</div><div class="ph-title">'+escapeHtml(title)+'</div><div class="ph-date">تاريخ الطباعة: '+fmtDate(todayStr())+'</div>';
+    main.insertBefore(hdr, main.firstChild);
+    var hidden = [];
+    main.querySelectorAll('.panel').forEach(function(pn){          // data-entry forms and import panels aren't part of a report
+      if(pn.querySelector('form, input[type=file]') && !pn.classList.contains('no-print')){ pn.classList.add('no-print'); hidden.push(pn); }
+    });
+    var cleaned = false;
+    var cleanup = function(){
+      if(cleaned) return; cleaned = true;
+      if(hdr.parentNode) hdr.parentNode.removeChild(hdr);
+      hidden.forEach(function(pn){ pn.classList.remove('no-print'); });
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.print();
+    setTimeout(cleanup, 60000);
+  }
+  function addPrintBar(){
+    var main = document.getElementById('main-area');
+    if(!main || main.querySelector('#print-page-btn')) return;
+    var bar = document.createElement('div'); bar.className = 'print-bar no-print';
+    bar.innerHTML = '<button class="btn ghost sm" id="print-page-btn" type="button">🖨 طباعة / حفظ PDF</button>';
+    main.insertBefore(bar, main.firstChild);
+    bar.querySelector('button').addEventListener('click', printCurrentPage);
+  }
+
   function getSelectionSet(key){ if(!selectionSets[key]) selectionSets[key] = new Set(); return selectionSets[key]; }
   function selectColHeader(tableKey){ return '<th style="width:34px;"><input type="checkbox" class="select-all" data-table="'+tableKey+'"></th>'; }
   function selectColCell(tableKey, id){ return '<td><input type="checkbox" class="row-select" data-table="'+tableKey+'" value="'+id+'"></td>'; }
-  function bulkDeleteBtnHtml(tableKey){
-    return '<button class="btn danger sm bulk-delete-btn" data-table="'+tableKey+'" type="button" style="display:none;margin-bottom:10px;">حذف المحدد</button>';
+  function bulkDeleteBtnHtml(tableKey, dateUrl){
+    return '<button class="btn danger sm bulk-delete-btn" data-table="'+tableKey+'" type="button" style="display:none;margin-bottom:10px;">حذف المحدد</button>'+
+      (dateUrl ? '<button class="btn ghost sm bulk-date-btn" data-table="'+tableKey+'" data-url="'+dateUrl+'" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تعديل تاريخ المحدد</button>' : '');
   }
   function bindSelectableTable(tableKey, bulkDeleteUrl, confirmNote){
     var set = getSelectionSet(tableKey);
+    var dateBtnInit = document.querySelector('.bulk-date-btn[data-table="'+tableKey+'"]');
+    if(dateBtnInit) dateBtnInit.addEventListener('click', function(){
+      var ids = Array.from(set).map(Number); if(ids.length) openBulkDateDialog(ids.length, dateBtnInit.getAttribute('data-url'), ids);
+    });
     set.clear();
     var rowEls = Array.prototype.slice.call(document.querySelectorAll('.row-select[data-table="'+tableKey+'"]'));
     var selectAllEls = document.querySelectorAll('.select-all[data-table="'+tableKey+'"]');
@@ -1071,6 +1195,8 @@
       var n = set.size;
       bulkBtn.textContent = 'حذف المحدد ('+n+')';
       bulkBtn.style.display = n>0 ? 'inline-flex' : 'none';
+      var dateBtn = document.querySelector('.bulk-date-btn[data-table="'+tableKey+'"]');
+      if(dateBtn){ dateBtn.textContent = 'تعديل تاريخ المحدد ('+n+')'; dateBtn.style.display = n>0 ? 'inline-flex' : 'none'; }
     }
     rowEls.forEach(function(chk){
       chk.checked = false;
@@ -1155,7 +1281,7 @@
           '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>'+
           '<td>'+escapeHtml(e.description||'—')+'</td>'+
           '<td class="amt debit">'+money(e.amount)+'</td>'+
-          '<td><button class="del-x" data-del-co-exp="'+co.id+'" data-co-exp-id="'+e.id+'">✕</button></td></tr>';
+          '<td>'+coExpActions(co.id, e)+'</td></tr>';
       }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف عمومية مسجلة بعد</td></tr>';
 
       var catOptions = expenseItemOptions(COMPANY_EXPENSE_CATEGORIES);
@@ -1209,7 +1335,7 @@
 
           '<h3 style="margin:24px 0 10px;font-size:15px;color:var(--teal-deep);">مصاريف الشركة (عمومية / إدارية / تسويقية / استثمارية / تمويلية)</h3>'+
           '<div class="muted-note">مصاريف عامة للشركة نفسها، منفصلة تمامًا عن تكاليف كل مشروع (اللي بتتسجل من صفحة "الإيرادات والمصروفات" لكل مشروع على حدة). إجمالي كل المصاريف فوق بيجمع المستويين مع بعض. للاستيراد من إكسيل: صفحة «الإيرادات والمصروفات» ← «الشركة ككل».</div>'+
-          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(tableKey)+'</div>'+
+          '<div style="margin-top:10px;">'+bulkDeleteBtnHtml(tableKey, '/companies/'+co.id+'/expenses/bulk-date')+'</div>'+
           '<div style="overflow-x:auto;"><table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+expRows+'</tbody></table></div>'+
           '<form class="add-co-expense-form" data-company="'+co.id+'" style="margin-top:14px;">'+
             '<div class="form-row three">'+
@@ -1237,6 +1363,11 @@
     '</div></div>';
   }
 
+  function coExpActions(coId, e){
+    if(e.asset_id) return '<span class="lock-x" title="مصروف شراء أصل ثابت — بيتعدل من صفحة الأصول الثابتة">🔒</span><button class="del-x" data-del-co-exp="'+coId+'" data-co-exp-id="'+e.id+'">✕</button>';
+    return '<button class="edit-x" data-edit-co-exp="'+coId+'" data-co-exp-id="'+e.id+'" title="تعديل">✎</button><button class="del-x" data-del-co-exp="'+coId+'" data-co-exp-id="'+e.id+'">✕</button>';
+  }
+
   function pageAssets(){
     var head = '<div class="page-head"><h2>الأصول الثابتة</h2><p>سجل أصول كل شركة (معدات، سيارات، أثاث...) بإهلاكها وقيمتها الدفترية. كل أصل بيتسجل تلقائي كمصروف «شراء أصول» على الشركة، فبيدخل في إجمالي مصاريفها ونصيب الشركاء منها.</p></div>';
     if(!cache.companies.length) return head+'<div class="panel"><div class="empty">أنشئ شركة أولاً من تبويب "الشركات".</div></div>';
@@ -1253,7 +1384,7 @@
         '<td class="amt">'+money(a.cost)+'</td><td class="mono">'+(a.usefulLifeYears!=null?a.usefulLifeYears:'—')+'</td>'+
         '<td class="amt debit">'+money(a.accumulatedDepreciation)+'</td><td class="amt teal">'+money(a.bookValue)+'</td>'+
         '<td>'+(a.has_expense?'<span class="tag rev">✓ مسجل كمصروف</span>':'<span style="color:var(--ink-soft);">— مش مسجل</span>')+'</td>'+
-        '<td><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="حذف الأصل ومصروف شرائه">✕</button></td></tr>';
+        '<td><button class="edit-x" data-edit-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="تعديل">✎</button><button class="del-x" data-del-co-asset="'+co.id+'" data-co-asset-id="'+a.id+'" title="حذف الأصل ومصروف شرائه">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="10" class="empty">لا توجد أصول ثابتة مسجلة لهذه الشركة بعد</td></tr>';
     return head+
     '<div class="field" style="max-width:320px;margin-bottom:18px;"><label>الشركة</label><select id="assets-company-select">'+coOptions+'</select></div>'+
@@ -1378,7 +1509,7 @@
         '<td>'+(e.category?('<span class="tag cat">'+escapeHtml(e.category)+'</span>'):'—')+'</td>'+
         '<td>'+escapeHtml(e.description||'—')+'</td>'+
         entryAmountCell('expense', e.amount)+
-        '<td><button class="del-x" data-del-co-exp="'+co.id+'" data-co-exp-id="'+e.id+'">✕</button></td></tr>';
+        '<td>'+coExpActions(co.id, e)+'</td></tr>';
     }).join('') || '<tr><td colspan="6" class="empty">لا توجد مصاريف مسجلة على مستوى الشركة بعد</td></tr>';
 
     var projRows = (rep && rep.projects.length) ? rep.projects.map(function(p){
@@ -1406,7 +1537,7 @@
       '</form>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>سجل مصاريف الشركة</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml(tableKey)+'</div>'+
+      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml(tableKey, '/companies/'+co.id+'/expenses/bulk-date')+'</div>'+
       '<table><thead><tr>'+selectColHeader(tableKey)+'<th>التاريخ</th><th>التصنيف</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
     '<div class="panel"><div class="panel-head"><h3>تكاليف المشاريع التابعة للشركة (للاطلاع فقط)</h3></div><div class="panel-body" style="padding:0;">'+
@@ -1455,7 +1586,7 @@
         '<td>'+escapeHtml(e.description||'—')+'</td>'+
         entryAmountCell(e.kind, e.amount)+
         extra+
-        '<td><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
+        '<td><button class="edit-x" data-edit-entry="'+e.id+'" title="تعديل">✎</button><button class="del-x" data-del-entry="'+e.id+'">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="10" class="empty">'+(list.length?'لا توجد حركات تطابق الفلتر المختار':'لا توجد حركات بعد لهذا المشروع')+'</td></tr>';
 
     var typeFilterOpts = [['all','الكل'],['expense','مصروفات فقط'],['revenue','إيرادات فقط']].map(function(o){
@@ -1480,7 +1611,7 @@
         '<div class="field"><label>النوع</label><select id="entries-type-filter">'+typeFilterOpts+'</select></div>'+
         '<div class="field"><label>حالة السداد</label><select id="entries-pay-filter">'+payFilterOpts+'</select></div>'+
       '</div>'+
-      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('entries')+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('entries', '/entries/bulk-date')+
         '<button class="btn sm bulk-pay-btn" data-table="entries" type="button" style="display:none;margin-bottom:10px;margin-right:8px;">تسديد المحدد</button></div>'+
       '<table><thead><tr>'+selectColHeader('entries')+'<th>التاريخ</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th>التصنيف</th><th>المدفوع</th><th>المتبقي</th><th></th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>'+
@@ -1530,7 +1661,7 @@
         '<td><span class="tag '+kindTag[c.kind]+'">'+kindLabel[c.kind]+'</span></td>'+
         '<td>'+escapeHtml(c.description||'—')+'</td>'+
         '<td class="amt '+(isCredit?'credit':'debit')+'">'+(isCredit?'+':'-')+money(c.amount)+'</td>'+
-        '<td><button class="del-x" data-del-ca="'+c.id+'">✕</button></td></tr>';
+        '<td><button class="edit-x" data-edit-ca="'+c.id+'" title="تعديل">✎</button><button class="del-x" data-del-ca="'+c.id+'">✕</button></td></tr>';
     }).join('') || '<tr><td colspan="7" class="empty">'+(list.length?'لا توجد حركات تطابق الفلتر المختار':'لا توجد حركات على الحساب الجاري لهذه الشركة')+'</td></tr>';
 
     return '<div class="page-head"><h2>الحساب الجاري للشركاء</h2><p>حساب جاري كل شريك على مستوى الشركة، مش على مستوى مشروع معين.</p></div>'+
@@ -1554,7 +1685,7 @@
         '<div class="field"><label>فلتر الشريك</label><select id="ca-tx-partner-filter">'+txPartnerFilterOptions+'</select></div>'+
         '<div class="field"><label>فلتر النوع</label><select id="ca-tx-kind-filter">'+txKindFilterOptions+'</select></div>'+
       '</div>'+
-      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('current-account')+'</div>'+
+      '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('current-account', '/current-account/bulk-date')+'</div>'+
       '<table><thead><tr>'+selectColHeader('current-account')+'<th>التاريخ</th><th>الشريك</th><th>النوع</th><th>البيان</th><th>المبلغ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
     '</div></div>';
   }
@@ -1915,9 +2046,11 @@
     var itemRows = filteredItems.map(function(it){
       var sold = soldByItem[it.id]||0;
       var remainingQty = Number(it.quantity_in) - sold;
-      return '<tr>'+selectColCell('inv-items', it.id)+'<td>'+escapeHtml(it.name)+'</td><td>'+escapeHtml(it.unit||'—')+'</td>'+
+      return '<tr>'+selectColCell('inv-items', it.id)+
+        '<td><input type="text" class="ei-name" data-item="'+it.id+'" value="'+escapeHtml(it.name)+'" style="width:170px;"></td>'+
+        '<td><input type="text" class="ei-unit" data-item="'+it.id+'" value="'+escapeHtml(it.unit||'')+'" list="inv-unit-types" style="width:110px;" placeholder="—"></td>'+
         '<td><input type="text" class="ei-building" data-item="'+it.id+'" value="'+escapeHtml(it.building||'')+'" style="width:90px;" placeholder="—"></td>'+
-        '<td class="mono">'+it.quantity_in+'</td><td class="mono">'+sold+'</td>'+
+        '<td><input type="number" class="ei-qty" data-item="'+it.id+'" value="'+it.quantity_in+'" min="0" step="1" style="width:70px;"></td><td class="mono">'+sold+'</td>'+
         '<td class="mono '+(remainingQty<0?'debit':'')+'">'+remainingQty+'</td>'+
         '<td>'+statusSelectHtml('class="ei-status" data-item="'+it.id+'" style="width:100px;"', it.status||'')+'</td>'+
         '<td><input type="number" class="ei-price" data-item="'+it.id+'" value="'+it.unit_price+'" min="0" step="0.01" style="width:110px;"></td>'+
@@ -2026,6 +2159,7 @@
         '<div class="field"><label>فلتر العمارة</label><select id="inv-building-filter">'+buildingFilterOptions+'</select></div>'+
       '</div>'+
       '<div style="padding:10px 18px 0;">'+bulkDeleteBtnHtml('inv-items')+'</div>'+
+      '<datalist id="inv-unit-types">'+Array.from(new Set(items.map(function(it){ return it.unit; }).filter(Boolean))).map(function(u){ return '<option value="'+escapeHtml(u)+'">'; }).join('')+'</datalist>'+
       '<table><thead><tr>'+selectColHeader('inv-items')+'<th>الصنف</th><th>الوحدة</th><th>العمارة</th><th>الكمية بالمخزون</th><th>المباع</th><th>المتبقي</th><th>الحالة</th><th>سعر الوحدة</th><th>مساحة الوحدة</th><th>مساحة الجاردن</th><th></th><th></th></tr></thead><tbody>'+itemRows+'</tbody></table>'+
       '<div class="muted-note" style="padding:8px 18px;">تقدر تعدّل العمارة، الحالة، السعر، والمساحة مباشرة في الجدول واضغط "حفظ".</div>'+
     '</div></div>'+
@@ -2051,7 +2185,7 @@
       '<div class="stat"><div class="label">المتبقي تحصيله</div><div class="val '+(totalRemaining>0.001?'debit':'credit')+'">'+money(totalRemaining)+'</div></div>'+
     '</div>'+
     '<div class="panel"><div class="panel-head"><h3>المبيعات والتحصيلات</h3></div><div class="panel-body" style="padding:14px 0 0;overflow-x:auto;">'+
-      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('inv-sales')+'</div>'+
+      '<div style="padding:0 18px;">'+bulkDeleteBtnHtml('inv-sales', '/inventory/sales/bulk-date')+'</div>'+
       '<table><thead><tr>'+selectColHeader('inv-sales')+
         '<th>رقم العمارة</th><th>رقم الوحدة</th><th>تاريخ التعاقد</th><th>اسم العميل</th>'+
         '<th>قيمة الوحدة</th><th>المحصل من العميل</th><th>المتبقي لدى العميل</th>'+
@@ -2078,7 +2212,7 @@
         '</div>'+
         '<div class="field" style="max-width:280px;"><label>رقم العمارة (كما يظهر في العقد، بيتعبّى تلقائيًا)</label><input type="text" id="ns-building" value="'+escapeHtml(g('building_no'))+'"></div>'+
         '<div class="form-row three">'+
-          '<div class="field"><label>تاريخ التعاقد</label><input type="date" id="ns-date" value="'+(editing?editing.sale_date:todayStr())+'" required></div>'+
+          '<div class="field"><label>تاريخ التعاقد</label><input type="date" id="ns-date" value="'+(editing?String(editing.sale_date).slice(0,10):todayStr())+'" required></div>'+
           '<div class="field"><label>قيمة الوحدة</label><input type="number" id="ns-amount" min="0" step="0.01" value="'+g('sale_amount')+'" required></div>'+
           '<div class="field"><label>الكمية</label><input type="number" id="ns-qty" min="0" step="0.01" value="'+g('quantity',1)+'" required></div>'+
         '</div>'+
@@ -2613,6 +2747,81 @@
       if(kind==='expense'){ body.category = document.getElementById('ne-category').value; }
       try{ await api('POST','/entries',body); invalidateAndReload(); } catch(e){ alert(e.message); }
     });
+    document.querySelectorAll('[data-edit-entry]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var id = Number(btn.getAttribute('data-edit-entry'));
+        var e = (cache.entries[uiState.entriesProjectId]||[]).find(function(x){ return x.id===id; }); if(!e) return;
+        var isExp = e.kind==='expense';
+        openEditDialog({
+          title: 'تعديل '+(isExp?'مصروف':'إيراد'),
+          note: isExp ? 'لو المصروف عليه سداد، تعديل المبلغ بيغيّر المتبقي منه.' : '',
+          fields: [{key:'date', label:'التاريخ', type:'date', value:String(e.entry_date).slice(0,10)},
+                   {key:'amount', label:'المبلغ', type:'number', step:'0.01', value:e.amount},
+                   {key:'description', label:'البيان', value:e.description||''}]
+                  .concat(isExp ? [{key:'category', label:'التصنيف', type:'select', optionsHtml:expenseItemOptions(EXPENSE_CATEGORIES), value:e.category||''}] : []),
+          onSave: async function(v){
+            var body = {date:needDate(v.date), amount:needAmount(v.amount), description:v.description.trim()};
+            if(isExp && v.category) body.category = v.category;
+            await api('PUT','/entries/'+id, body); invalidateAndReload();
+          }
+        });
+      });
+    });
+    document.querySelectorAll('[data-edit-co-exp]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var coId = Number(btn.getAttribute('data-edit-co-exp')), id = Number(btn.getAttribute('data-co-exp-id'));
+        var e = (cache.companyExpenses[coId]||[]).find(function(x){ return x.id===id; }); if(!e) return;
+        openEditDialog({
+          title: 'تعديل مصروف الشركة',
+          fields: [{key:'date', label:'التاريخ', type:'date', value:String(e.entry_date).slice(0,10)},
+                   {key:'amount', label:'المبلغ', type:'number', step:'0.01', value:e.amount},
+                   {key:'description', label:'البيان', value:e.description||''},
+                   {key:'category', label:'التصنيف', type:'select', optionsHtml:expenseItemOptions(COMPANY_EXPENSE_CATEGORIES), value:e.category||''}],
+          onSave: async function(v){
+            var body = {date:needDate(v.date), amount:needAmount(v.amount), description:v.description.trim()};
+            if(v.category) body.category = v.category;
+            await api('PUT','/companies/'+coId+'/expenses/'+id, body); invalidateAndReload();
+          }
+        });
+      });
+    });
+    document.querySelectorAll('[data-edit-ca]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var id = Number(btn.getAttribute('data-edit-ca'));
+        var c = (cache.currentAccount[uiState.caCompanyId]||[]).find(function(x){ return x.id===id; }); if(!c) return;
+        openEditDialog({
+          title: 'تعديل حركة الحساب الجاري',
+          fields: [{key:'date', label:'التاريخ', type:'date', value:String(c.entry_date).slice(0,10)},
+                   {key:'kind', label:'نوع الحركة', type:'select', value:c.kind, optionsHtml:'<option value="deposit">إيداع (له)</option><option value="withdrawal">سحب (عليه)</option><option value="distribution">توزيع أرباح (له)</option>'},
+                   {key:'amount', label:'المبلغ', type:'number', step:'0.01', value:c.amount},
+                   {key:'description', label:'البيان', value:c.description||''}],
+          onSave: async function(v){
+            await api('PUT','/current-account/'+id, {date:needDate(v.date), kind:v.kind, amount:needAmount(v.amount), description:v.description.trim()}); invalidateAndReload();
+          }
+        });
+      });
+    });
+    document.querySelectorAll('[data-edit-co-asset]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var coId = Number(btn.getAttribute('data-edit-co-asset')), id = Number(btn.getAttribute('data-co-asset-id'));
+        var a = (cache.companyAssets[coId]||[]).find(function(x){ return x.id===id; }); if(!a) return;
+        openEditDialog({
+          title: 'تعديل الأصل',
+          note: a.has_expense ? 'مصروف «شراء أصول» المرتبط بالأصل بيتعدل معاه (التكلفة والتاريخ والاسم).' : '',
+          fields: [{key:'name', label:'اسم الأصل', value:a.name}, {key:'category', label:'التصنيف', value:a.category||''},
+                   {key:'date', label:'تاريخ الشراء', type:'date', value:String(a.purchase_date).slice(0,10)},
+                   {key:'cost', label:'التكلفة', type:'number', step:'0.01', value:a.cost},
+                   {key:'life', label:'سنوات العمر الافتراضي', type:'number', step:'0.5', value:a.usefulLifeYears==null?'':a.usefulLifeYears},
+                   {key:'notes', label:'ملاحظات', value:a.notes||''}],
+          onSave: async function(v){
+            if(!v.name.trim()) throw new Error('اسم الأصل مطلوب');
+            var body = {name:v.name.trim(), category:v.category.trim(), purchaseDate:needDate(v.date), cost:needAmount(v.cost), notes:v.notes.trim()};
+            if(v.life!=='') body.usefulLifeYears = parseFloat(v.life);
+            await api('PUT','/companies/'+coId+'/assets/'+id, body); invalidateAndReload();
+          }
+        });
+      });
+    });
     document.querySelectorAll('[data-del-entry]').forEach(function(btn){
       btn.addEventListener('click', async function(){
         try{ await api('DELETE','/entries/'+btn.getAttribute('data-del-entry')); invalidateAndReload(); } catch(e){ alert(e.message); }
@@ -2736,7 +2945,10 @@
     });
     async function saveItemRow(id){
       var sel = function(cls){ return document.querySelector('.'+cls+'[data-item="'+id+'"]'); };
+      if(!sel('ei-name').value.trim()){ alert('اسم الصنف مطلوب'); return; }
+      if(isNaN(parseFloat(sel('ei-qty').value))){ alert('الكمية غير صحيحة'); return; }
       var body = {
+        name: sel('ei-name').value.trim(), unit: sel('ei-unit').value.trim(), quantityIn: parseFloat(sel('ei-qty').value),
         building: sel('ei-building').value.trim(),      // '' clears it (null would mean "leave unchanged")
         status: sel('ei-status').value,
         unitPrice: parseFloat(sel('ei-price').value)||0,
@@ -3150,6 +3362,7 @@
       html = ppPeriods();
     }
     main.innerHTML = html;
+    addPrintBar();
     bindPartnerChips(); bindLedgerToggles();
     if(partnerTab==='periods') bindPartnerPeriodControls();
   }

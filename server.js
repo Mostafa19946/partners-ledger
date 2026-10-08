@@ -624,6 +624,26 @@ app.post('/api/companies/:id/expenses', auth, requireAdmin, async (req, res) => 
   res.json(rows[0]);
 });
 
+app.put('/api/companies/:id/expenses/:expenseId', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const bad = checkMoneyEdit(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const cur = (await pool.query('SELECT asset_id FROM company_expenses WHERE id=$1 AND company_id=$2', [req.params.expenseId, req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'غير موجود' });
+  if (cur.asset_id) return res.status(409).json({ error: 'ده مصروف شراء أصل ثابت. عدّله من صفحة «الأصول الثابتة» وهيتعدل هنا تلقائي.' });
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE company_expenses SET amount = COALESCE($1, amount), entry_date = COALESCE($2, entry_date),
+       description = COALESCE($3, description), category = COALESCE($4, category)
+     WHERE id=$5 AND company_id=$6 RETURNING *`,
+    [v(b.amount), v(b.date), v(b.description), v(b.category), req.params.expenseId, req.params.id]
+  );
+  res.json(rows[0]);
+});
+// rows tied to an asset purchase keep the asset's purchase date, so they are left out of a bulk date change
+registerBulkDate('/api/companies/:id/expenses/bulk-date', 'company_expenses', 'entry_date',
+  { sql: 'company_id = $3 AND asset_id IS NULL', params: (req) => [parseInt(req.params.id, 10)] });
+
 app.delete('/api/companies/:id/expenses/:expenseId', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM company_expenses WHERE id=$1 AND company_id=$2', [req.params.expenseId, req.params.id]);
   res.json({ ok: true });
@@ -675,6 +695,37 @@ async function recordAssetPurchases(db, companyId, assetIds) {
     RETURNING id
   `, [companyId, ASSET_PURCHASE_CATEGORY, assetIds]);
   return rows.length;
+}
+
+// Validates the editable fields of a money record. Returns an error string, or null when fine.
+function checkMoneyEdit(b) {
+  if (b.amount !== undefined && b.amount !== null && (!Number.isFinite(Number(b.amount)) || Number(b.amount) === 0)) return 'المبلغ غير صحيح';
+  if (b.date !== undefined && b.date !== null && !isValidISODate(b.date)) return 'التاريخ غير صالح (الصيغة YYYY-MM-DD)';
+  return null;
+}
+
+// "Change the date of the selected rows": either one new date for all of them, or move each by N days (+1 / -1 ...).
+// Handy for fixing a whole import whose dates came out a day off, without editing rows one by one.
+function registerBulkDate(path, table, dateCol, extraWhere) {
+  app.post(path, auth, requireAdmin, async (req, res) => {
+    const { ids, date, shiftDays } = req.body || {};
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'لا يوجد عناصر محددة' });
+    const idList = ids.map(n => parseInt(n, 10)).filter(Boolean);
+    const params = [idList];
+    let setSql;
+    if (date !== undefined && date !== null && date !== '') {
+      if (!isValidISODate(date)) return res.status(400).json({ error: 'التاريخ غير صالح (الصيغة YYYY-MM-DD)' });
+      params.push(date); setSql = `${dateCol} = $2::date`;
+    } else if (Number.isInteger(Number(shiftDays)) && Number(shiftDays) !== 0 && Math.abs(Number(shiftDays)) <= 3660) {
+      params.push(Number(shiftDays)); setSql = `${dateCol} = (${dateCol} + $2::int)`;
+    } else {
+      return res.status(400).json({ error: 'حدد تاريخًا جديدًا أو عدد أيام للإزاحة' });
+    }
+    let where = `id = ANY($1::int[])`;
+    if (extraWhere) { where += ' AND ' + extraWhere.sql; params.push(...extraWhere.params(req)); }
+    const { rowCount } = await pool.query(`UPDATE ${table} SET ${setSql} WHERE ${where}`, params);
+    res.json({ updated: rowCount });
+  });
 }
 
 function withAssetDepreciation(row) {
@@ -1054,6 +1105,25 @@ app.post('/api/entries', auth, requireAdmin, async (req, res) => {
   res.json(rows[0]);
 });
 
+app.put('/api/entries/:id', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const bad = checkMoneyEdit(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE entries SET
+       amount = COALESCE($1, amount),
+       entry_date = COALESCE($2, entry_date),
+       description = COALESCE($3, description),
+       category = CASE WHEN kind = 'expense' THEN COALESCE($4, category) ELSE NULL END
+     WHERE id=$5 RETURNING *`,
+    [v(b.amount), v(b.date), v(b.description), v(b.category), req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
+});
+registerBulkDate('/api/entries/bulk-date', 'entries', 'entry_date');
+
 app.delete('/api/entries/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM entries WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
@@ -1155,18 +1225,29 @@ app.post('/api/inventory/items', auth, requireAdmin, async (req, res) => {
 app.put('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const v = (x) => (x === undefined ? null : x);
+  if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: 'اسم الصنف مطلوب' });
+  if (b.quantityIn !== undefined && b.quantityIn !== null) {
+    const q = Number(b.quantityIn);
+    if (!Number.isFinite(q) || q < 0) return res.status(400).json({ error: 'الكمية غير صحيحة' });
+    const sold = Number((await pool.query('SELECT COALESCE(SUM(quantity),0) AS q FROM inventory_sales WHERE item_id=$1', [req.params.id])).rows[0].q);
+    if (q + 1e-9 < sold) return res.status(400).json({ error: 'الكمية أقل من اللي اتباع منه فعلًا (' + sold + ')' });
+  }
   const { rows } = await pool.query(
     `UPDATE inventory_items SET
-       status = COALESCE($1, status),
-       unit_price = COALESCE($2, unit_price),
-       net_area = COALESCE($3, net_area),
-       garden_area = COALESCE($4, garden_area),
-       building = COALESCE($5, building)
-     WHERE id=$6 RETURNING *`,
-    [v(b.status), v(b.unitPrice), v(b.netArea), v(b.gardenArea), v(b.building), req.params.id]
+       name = COALESCE($1, name),
+       unit = COALESCE($2, unit),
+       quantity_in = COALESCE($3, quantity_in),
+       status = COALESCE($4, status),
+       unit_price = COALESCE($5, unit_price),
+       net_area = COALESCE($6, net_area),
+       garden_area = COALESCE($7, garden_area),
+       building = COALESCE($8, building)
+     WHERE id=$9 RETURNING *`,
+    [b.name === undefined ? null : String(b.name).trim(), v(b.unit), v(b.quantityIn), v(b.status), v(b.unitPrice), v(b.netArea), v(b.gardenArea), v(b.building), req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
-  res.json(rows[0]);
+  await syncSoldStatus(pool, [rows[0].id]);   // a quantity change can make the unit sold-out (or free again)
+  res.json((await pool.query('SELECT * FROM inventory_items WHERE id=$1', [rows[0].id])).rows[0]);   // re-read so the status is the synced one
 });
 
 app.delete('/api/inventory/items/:id', auth, requireAdmin, async (req, res) => {
@@ -1365,8 +1446,23 @@ app.post('/api/inventory/sync-prices', auth, requireAdmin, async (req, res) => {
 app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const v = (x) => (x === undefined ? null : x);
+  const cur = (await pool.query('SELECT id, project_id, item_id, quantity FROM inventory_sales WHERE id=$1', [req.params.id])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'غير موجود' });
+  const bad = checkMoneyEdit({ amount: b.saleAmount, date: b.saleDate });
+  if (bad) return res.status(400).json({ error: bad });
+  const newItem = b.itemId ? parseInt(b.itemId, 10) : cur.item_id;
+  const newQty = b.quantity !== undefined && b.quantity !== null ? Number(b.quantity) : Number(cur.quantity);
+  if (!(newQty > 0)) return res.status(400).json({ error: 'الكمية غير صحيحة' });
+  if (newItem !== cur.item_id || newQty !== Number(cur.quantity)) {
+    // the unit must belong to the same project and still have enough in stock once this sale is counted in it
+    const it = (await pool.query('SELECT id, quantity_in FROM inventory_items WHERE id=$1 AND project_id=$2', [newItem, cur.project_id])).rows[0];
+    if (!it) return res.status(400).json({ error: 'الوحدة دي مش تابعة للمشروع' });
+    const others = Number((await pool.query('SELECT COALESCE(SUM(quantity),0) AS q FROM inventory_sales WHERE item_id=$1 AND id<>$2', [newItem, cur.id])).rows[0].q);
+    if (others + newQty > Number(it.quantity_in) + 1e-9) return res.status(400).json({ error: 'الوحدة دي مفيهاش مخزون كفاية (المتبقي ' + (Number(it.quantity_in) - others) + ')' });
+  }
   const { rows } = await pool.query(
     `UPDATE inventory_sales SET
+       item_id = $18,
        quantity = COALESCE($1, quantity),
        sale_amount = COALESCE($2, sale_amount),
        sale_date = COALESCE($3, sale_date),
@@ -1387,12 +1483,14 @@ app.put('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
     [v(b.quantity), v(b.saleAmount), v(b.saleDate), v(b.description), v(b.customerName), v(b.buildingNo),
      v(b.garageValue), v(b.garageCollected), v(b.maintenanceValue), v(b.maintenanceCollected),
      v(b.utilitiesValue), v(b.utilitiesCollected), v(b.bankCollected), v(b.bankHeld), v(b.collectionDiff),
-     v(b.downPaymentPercent), req.params.id]
+     v(b.downPaymentPercent), req.params.id, newItem]
   );
   if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
-  await syncSoldStatus(pool, [rows[0].item_id]);
+  await syncSoldStatus(pool, [rows[0].item_id, cur.item_id]);     // both the new unit and the one it was moved away from
   res.json(rows[0]);
 });
+registerBulkDate('/api/inventory/sales/bulk-date', 'inventory_sales', 'sale_date');
+registerBulkDate('/api/inventory/collections/bulk-date', 'sale_collections', 'collection_date');
 
 app.delete('/api/inventory/sales/:id', auth, requireAdmin, async (req, res) => {
   const del = await pool.query('DELETE FROM inventory_sales WHERE id=$1 RETURNING item_id', [req.params.id]);
@@ -1557,6 +1655,22 @@ app.post('/api/current-account', auth, requireAdmin, async (req, res) => {
   );
   res.json(rows[0]);
 });
+
+app.put('/api/current-account/:id', auth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const bad = checkMoneyEdit(b);
+  if (bad) return res.status(400).json({ error: bad });
+  if (b.kind !== undefined && b.kind !== null && !['deposit', 'withdrawal', 'distribution'].includes(b.kind)) return res.status(400).json({ error: 'نوع الحركة غير صحيح' });
+  const v = (x) => (x === undefined ? null : x);
+  const { rows } = await pool.query(
+    `UPDATE current_account SET amount = COALESCE($1, amount), entry_date = COALESCE($2, entry_date),
+       description = COALESCE($3, description), kind = COALESCE($4, kind) WHERE id=$5 RETURNING *`,
+    [v(b.amount), v(b.date), v(b.description), v(b.kind), req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'غير موجود' });
+  res.json(rows[0]);
+});
+registerBulkDate('/api/current-account/bulk-date', 'current_account', 'entry_date');
 
 app.delete('/api/current-account/:id', auth, requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM current_account WHERE id=$1', [req.params.id]);
